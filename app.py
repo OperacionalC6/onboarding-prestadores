@@ -51,7 +51,8 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 COLUNAS = [
     "id", "codigo_acesso", "criado_em", "atualizado_em",
     # Etapa 1
-    "nome", "email", "telefone", "vaga", "status_entrevista", "obs_entrevista",
+    "nome", "email", "telefone", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
+    "avaliacao_nota", "avaliacao_resumo", "avaliacao",
     # Etapa 2
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
@@ -196,7 +197,7 @@ def criar(nome, email, telefone, vaga, status):
 
 
 def guardar_arquivo(pid, arquivo):
-    """Salva o cartão CNPJ no Google Drive (se configurado) ou em disco local."""
+    """Salva um anexo (cartão CNPJ, currículo) no Google Drive (se configurado) ou em disco local."""
     nome = f"{pid}_{re.sub(r'[^A-Za-z0-9._-]', '_', arquivo.name)}"
     conteudo = arquivo.getvalue()
     pasta = secret("drive_folder_id")
@@ -612,13 +613,15 @@ def tela_rh():
     if not login_rh():
         return
     st.title("📋 Painel de Controle · RH")
-    aba_geral, aba_entrevistas, aba_prestador = st.tabs(
-        ["📊 Visão geral", "🗣️ Etapa 1 · Entrevistas", "🧾 Etapas 3 a 7 · Prestador"]
+    aba_geral, aba_entrevistas, aba_comp, aba_prestador = st.tabs(
+        ["📊 Visão geral", "🗣️ Etapa 1 · Entrevistas", "📈 Comparativo", "🧾 Etapas 3 a 7 · Prestador"]
     )
     with aba_geral:
         visao_geral()
     with aba_entrevistas:
         etapa_entrevistas()
+    with aba_comp:
+        comparativo()
     with aba_prestador:
         gestao_prestador()
 
@@ -663,6 +666,7 @@ def etapa_entrevistas():
         tel = c1.text_input("Telefone *")
         vaga = c2.text_input("Vaga / Cargo *")
         status = st.selectbox("Status", STATUS_ENTREVISTA)
+        cv = st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"])
         if st.form_submit_button("Cadastrar", type="primary"):
             if not all([nome.strip(), email.strip(), tel.strip(), vaga.strip()]):
                 st.error("Preencha todos os campos.")
@@ -672,6 +676,8 @@ def etapa_entrevistas():
                 st.error("Já existe um candidato com esse e-mail.")
             else:
                 novo = criar(nome, email, tel, vaga, status)
+                if cv is not None:
+                    atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
                 st.success(f"{novo['nome']} cadastrado. Código de acesso: **{novo['codigo_acesso']}**")
 
     df = carregar()
@@ -688,24 +694,128 @@ def etapa_entrevistas():
         atualizar(r["id"], status_entrevista=novo_status, obs_entrevista=obs)
         st.success("Status atualizado.")
         st.rerun()
+
     if r["status_entrevista"] == "Aprovado":
         st.info(
             f"Envie ao candidato o link deste app, o **código de acesso `{r['codigo_acesso']}`** e o e-mail "
             f"cadastrado (`{r['email']}`) para ele preencher a Etapa 2."
         )
 
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        mostrar_arquivo(r["curriculo"], "Currículo", key=f"dl_cv_{r['id']}")
+    with c2:
+        novo_cv = st.file_uploader("Anexar ou trocar currículo", type=["pdf", "doc", "docx"], key=f"up_cv_{r['id']}")
+        if novo_cv is not None and st.button("Salvar currículo", key=f"salva_cv_{r['id']}"):
+            atualizar(r["id"], curriculo=guardar_arquivo(f"{r['id']}_cv", novo_cv))
+            st.success("Currículo salvo.")
+            st.rerun()
 
-def mostrar_cartao(valor):
+    avaliacao_candidato(r)
+
+
+def caminho_local(valor):
+    return UPLOAD_DIR / valor[6:] if valor.startswith("local:") else None
+
+
+def avaliacao_candidato(r):
+    st.markdown("#### Avaliação de perfil")
+    st.caption("Cole aqui a nota e o resumo da avaliação feita pelo Claude no projeto e anexe o arquivo completo.")
+    c1, c2 = st.columns([1, 3])
+    try:
+        nota_atual = float(r["avaliacao_nota"].replace(",", ".")) if r["avaliacao_nota"] else None
+    except ValueError:
+        nota_atual = None
+    nota = c1.number_input("Nota geral (0 a 10)", 0.0, 10.0, value=nota_atual, step=0.1, format="%.1f",
+                           key=f"nota_{r['id']}")
+    resumo = c2.text_area("Resumo executivo", r["avaliacao_resumo"], height=110, key=f"res_{r['id']}")
+    arq = st.file_uploader("Avaliação completa (.md, .pdf ou .docx)", type=["md", "pdf", "docx"],
+                           key=f"up_av_{r['id']}")
+    if st.button("Salvar avaliação", key=f"salva_av_{r['id']}", type="primary"):
+        campos = dict(avaliacao_nota="" if nota is None else f"{nota:.1f}", avaliacao_resumo=resumo.strip())
+        if arq is not None:
+            campos["avaliacao"] = guardar_arquivo(f"{r['id']}_avaliacao", arq)
+        atualizar(r["id"], **campos)
+        st.success("Avaliação salva.")
+        st.rerun()
+    mostrar_arquivo(r["avaliacao"], "Avaliação completa", key=f"dl_av_{r['id']}")
+    local = caminho_local(r["avaliacao"])
+    if local and local.suffix == ".md" and local.exists():
+        with st.expander("Ler avaliação completa"):
+            st.markdown(local.read_text(encoding="utf-8", errors="ignore"))
+
+
+def slug(txt):
+    return re.sub(r"[^a-z0-9]+", "-", txt.lower()).strip("-") or "vaga"
+
+
+def comparativo():
+    df = carregar()
+    if df.empty:
+        st.info("Nenhum candidato cadastrado ainda.")
+        return
+    vagas = sorted(v for v in df["vaga"].unique() if v)
+    vaga = st.selectbox("Vaga", vagas, key="comp_vaga")
+    d = df[df["vaga"] == vaga].copy()
+    d["nota"] = pd.to_numeric(d["avaliacao_nota"].str.replace(",", "."), errors="coerce")
+    d = d.sort_values("nota", ascending=False, na_position="last")
+    d.insert(0, "posicao", range(1, len(d) + 1))
+    d["Currículo"] = d["curriculo"].map(lambda v: "Sim" if v else "")
+
+    st.markdown(f"#### Ranking · {vaga}")
+    st.caption(f"{d['nota'].notna().sum()} de {len(d)} candidatos com avaliação.")
+    st.dataframe(
+        d[["posicao", "nome", "nota", "status_entrevista", "avaliacao_resumo", "Currículo"]].rename(columns={
+            "posicao": "#", "nome": "Nome", "nota": "Nota", "status_entrevista": "Status",
+            "avaliacao_resumo": "Resumo executivo"}),
+        hide_index=True, width="stretch",
+        column_config={"Nota": st.column_config.ProgressColumn("Nota", min_value=0, max_value=10, format="%.1f")},
+    )
+
+    st.markdown("#### Comparativo detalhado")
+    base = f"comparativo_{slug(vaga)}"
+    existentes = sorted(UPLOAD_DIR.glob(base + ".*")) if UPLOAD_DIR.exists() else []
+    if existentes:
+        arq = existentes[-1]
+        st.download_button(f"📎 Baixar {arq.name}", arq.read_bytes(), arq.name, key="dl_comp")
+        try:
+            if arq.suffix == ".xlsx":
+                st.dataframe(pd.read_excel(arq), hide_index=True, width="stretch")
+            elif arq.suffix == ".csv":
+                st.dataframe(pd.read_csv(arq), hide_index=True, width="stretch")
+            elif arq.suffix == ".md":
+                with st.expander("Ler comparativo", expanded=True):
+                    st.markdown(arq.read_text(encoding="utf-8", errors="ignore"))
+        except Exception as e:
+            st.warning(f"Não consegui exibir o arquivo ({e}). Use o botão de download.")
+    else:
+        st.caption("Nenhum comparativo detalhado anexado para esta vaga.")
+    novo = st.file_uploader("Anexar ou trocar comparativo (.xlsx, .csv ou .md)", type=["xlsx", "csv", "md"],
+                            key=f"up_comp_{slug(vaga)}")
+    if novo is not None and st.button("Salvar comparativo", key="salva_comp"):
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for antigo in existentes:
+            antigo.unlink()
+        (UPLOAD_DIR / (base + Path(novo.name).suffix.lower())).write_bytes(novo.getvalue())
+        st.success("Comparativo salvo.")
+        st.rerun()
+
+
+def mostrar_arquivo(valor, rotulo, key):
     if not valor:
-        st.write("Cartão CNPJ: *não anexado*")
+        st.write(f"{rotulo}: *não anexado*")
     elif valor.startswith("local:"):
         caminho = UPLOAD_DIR / valor[6:]
         if caminho.exists():
-            st.download_button("📎 Baixar Cartão CNPJ", caminho.read_bytes(), caminho.name)
+            st.download_button(f"📎 Baixar {rotulo}", caminho.read_bytes(), caminho.name, key=key)
         else:
-            st.warning("Arquivo local não encontrado (o servidor pode ter sido reiniciado). Peça o reenvio.")
+            st.warning(f"{rotulo}: arquivo não encontrado (o servidor pode ter sido reiniciado). Anexe de novo.")
     else:
-        st.link_button("📎 Abrir Cartão CNPJ no Drive", valor)
+        st.link_button(f"📎 Abrir {rotulo} no Drive", valor)
+
+
+def mostrar_cartao(valor):
+    mostrar_arquivo(valor, "Cartão CNPJ", key="dl_cartao")
 
 
 def ck(r, campo, rotulo, key):
