@@ -633,9 +633,9 @@ def visao_geral():
     filtro = st.multiselect("Filtrar por etapa", sorted(df["etapa"].unique()))
     vis = df[df["etapa"].isin(filtro)] if filtro else df
     st.dataframe(
-        vis[["nome", "vaga", "email", "telefone", "status_entrevista", "etapa", "situacao_cnpj_pj", "padrinho",
+        vis[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "etapa", "situacao_cnpj_pj", "padrinho",
              "atualizado_em"]]
-        .rename(columns={"nome": "Nome", "vaga": "Vaga", "email": "E-mail", "telefone": "Telefone",
+        .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail", "telefone": "Telefone",
                          "status_entrevista": "Entrevista", "etapa": "Etapa atual", "situacao_cnpj_pj": "CNPJ",
                          "padrinho": "Padrinho", "atualizado_em": "Atualizado em"}),
         hide_index=True, width="stretch",
