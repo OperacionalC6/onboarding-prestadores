@@ -39,6 +39,9 @@ CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 STATUS_ENTREVISTA = ["Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
 STATUS_ATIVO = "Ativo / Operação Iniciada"
+DOC_APROVADA = "Aprovada"
+DOC_APROVADA_PEND = "Aprovada (CNPJ pendente)"
+DOCS_LIBERADAS = (DOC_APROVADA, DOC_APROVADA_PEND)
 SIM = "Sim"
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -350,14 +353,20 @@ Depois de abrir a empresa, volte a este formulário com o mesmo código de acess
 # =============================================================================
 # ETAPA ATUAL / PROGRESSO
 # =============================================================================
+def cnpj_pendente(r):
+    return r["cnpj_apto"] != SIM
+
+
 def etapa_atual(r):
     if r["status_final"] == STATUS_ATIVO:
         return 8  # concluído
     if r["status_entrevista"] != "Aprovado":
         return 1
-    if not r["form_enviado_em"] or r["cnpj_apto"] != SIM:
+    if not r["form_enviado_em"]:
         return 2
-    if r["doc_status"] != "Aprovada":
+    if cnpj_pendente(r) and r["doc_status"] != DOC_APROVADA_PEND:
+        return 2  # sem CNPJ regular e o RH ainda não liberou com pendência
+    if r["doc_status"] not in DOCS_LIBERADAS:
         return 3
     if r["contrato_assinado"] != SIM:
         return 4
@@ -374,10 +383,12 @@ def rotulo_etapa(r):
         return STATUS_ATIVO
     if e == 1:
         return f"1. Entrevistas ({r['status_entrevista'] or '-'})"
-    if e == 2 and r["form_enviado_em"] and r["cnpj_apto"] != SIM:
-        return "2. Aguardando CNPJ regular"
+    if e == 2 and r["form_enviado_em"] and cnpj_pendente(r):
+        return "2. Aguardando CNPJ (RH pode liberar com pendência)"
     if e == 3 and r["doc_status"] == "Reprovada":
         return "3. Documentação reprovada"
+    if e >= 3 and (cnpj_pendente(r) or r["doc_status"] == DOC_APROVADA_PEND):
+        return f"{ETAPAS[e]} · CNPJ pendente"
     return ETAPAS[e]
 
 
@@ -561,7 +572,7 @@ def formulario_candidato(r):
         )
         if arquivo is not None:
             campos["cartao_cnpj"] = guardar_arquivo(pid, arquivo)
-        if apto:
+        if apto and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
         st.success("Dados enviados com sucesso!")
@@ -610,18 +621,22 @@ def visao_geral():
         return
     df["etapa"] = df.apply(rotulo_etapa, axis=1)
     df["n_etapa"] = df.apply(etapa_atual, axis=1)
-    cols = st.columns(4)
+    df["situacao_cnpj_pj"] = df.apply(
+        lambda r: "" if not r["form_enviado_em"] else ("Regular" if r["cnpj_apto"] == SIM else "Pendente"), axis=1)
+    cols = st.columns(5)
     cols[0].metric("Candidatos", len(df))
     cols[1].metric("Em entrevista", int((df["status_entrevista"] == "Em Entrevista").sum()))
     cols[2].metric("Em onboarding", int(df["n_etapa"].between(2, 7).sum()))
-    cols[3].metric("Ativos", int((df["status_final"] == STATUS_ATIVO).sum()))
+    cols[3].metric("CNPJ pendente", int(((df["situacao_cnpj_pj"] == "Pendente") & (df["n_etapa"] < 8)).sum()))
+    cols[4].metric("Ativos", int((df["status_final"] == STATUS_ATIVO).sum()))
 
     filtro = st.multiselect("Filtrar por etapa", sorted(df["etapa"].unique()))
     vis = df[df["etapa"].isin(filtro)] if filtro else df
     st.dataframe(
-        vis[["nome", "vaga", "email", "telefone", "status_entrevista", "etapa", "padrinho", "atualizado_em"]]
+        vis[["nome", "vaga", "email", "telefone", "status_entrevista", "etapa", "situacao_cnpj_pj", "padrinho",
+             "atualizado_em"]]
         .rename(columns={"nome": "Nome", "vaga": "Vaga", "email": "E-mail", "telefone": "Telefone",
-                         "status_entrevista": "Entrevista", "etapa": "Etapa atual",
+                         "status_entrevista": "Entrevista", "etapa": "Etapa atual", "situacao_cnpj_pj": "CNPJ",
                          "padrinho": "Padrinho", "atualizado_em": "Atualizado em"}),
         hide_index=True, width="stretch",
     )
@@ -653,9 +668,8 @@ def etapa_entrevistas():
     if df.empty:
         return
     st.markdown("#### Atualizar status da entrevista")
-    opcoes = {f"{r['nome']} · {r['vaga']} ({r['status_entrevista']})": r["id"] for _, r in df.iterrows()}
-    escolha = st.selectbox("Candidato", list(opcoes), key="sel_entrevista")
-    r = buscar(opcoes[escolha])
+    nomes = {r["id"]: f"{r['nome']} · {r['vaga']} ({r['status_entrevista']})" for _, r in df.iterrows()}
+    r = buscar(st.selectbox("Candidato", list(nomes), format_func=nomes.get, key="sel_entrevista"))
     c1, c2 = st.columns([1, 2])
     novo_status = c1.selectbox("Status", STATUS_ENTREVISTA, index=STATUS_ENTREVISTA.index(r["status_entrevista"])
                                if r["status_entrevista"] in STATUS_ENTREVISTA else 0, key=f"st_{r['id']}")
@@ -698,8 +712,8 @@ def gestao_prestador():
     if df.empty:
         st.info("Nenhum candidato aprovado na entrevista ainda.")
         return
-    opcoes = {f"{r['nome']} · {rotulo_etapa(r)}": r["id"] for _, r in df.iterrows()}
-    r = buscar(opcoes[st.selectbox("Prestador", list(opcoes), key="sel_prestador")])
+    nomes = {r["id"]: f"{r['nome']} · {rotulo_etapa(r)}" for _, r in df.iterrows()}
+    r = buscar(st.selectbox("Prestador", list(nomes), format_func=nomes.get, key="sel_prestador"))
     barra_progresso(r)
     e = etapa_atual(r)
 
@@ -730,16 +744,30 @@ def gestao_prestador():
                 mostrar_cartao(r["cartao_cnpj"])
             if r["fonte_validacao"].startswith("Declaração"):
                 st.warning("A validação foi declarada pelo candidato. Confira MEI e CNAE no cartão CNPJ.")
-            if r["cnpj_apto"] != SIM:
-                st.error("O CNPJ ainda não atende às regras (ou o candidato não tem CNPJ). Aguarde a regularização.")
-            else:
-                st.write(f"Status atual da documentação: **{r['doc_status'] or 'Pendente'}**")
-                obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"],
-                                    key=f"docobs_{r['id']}")
+            st.write(f"Status atual da documentação: **{r['doc_status'] or 'Pendente'}**")
+            obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"],
+                                key=f"docobs_{r['id']}")
+            if cnpj_pendente(r):
+                motivo = "não tem CNPJ" if r["possui_cnpj"] == "Não" else "tem CNPJ fora das regras (MEI, CNAE ou situação)"
+                st.warning(
+                    f"O candidato {motivo}. Você pode **aprovar com o CNPJ pendente** para seguir com contrato, "
+                    "acessos e integração. O início das operações (Etapa 7) só libera depois que o CNPJ "
+                    "for regularizado: o candidato volta ao formulário com o mesmo código e valida o novo CNPJ."
+                )
                 b1, b2 = st.columns(2)
-                if b1.button("✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
-                    atualizar(r["id"], doc_status="Aprovada", doc_obs=obs, doc_validado_em=agora())
+                if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
+                        "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
+                    atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
                     st.rerun()
+            else:
+                if r["doc_status"] == DOC_APROVADA_PEND:
+                    st.info("O candidato regularizou o CNPJ. Confira o cartão acima e aprove a documentação definitiva.")
+                b1, b2 = st.columns(2)
+                if r["doc_status"] != DOC_APROVADA and b1.button(
+                        "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
+                    atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
+                    st.rerun()
+            if r["doc_status"] not in DOCS_LIBERADAS:
                 if b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
                     if not obs.strip():
                         st.error("Descreva o ajuste necessário.")
@@ -814,6 +842,12 @@ def gestao_prestador():
             st.success(f"🎉 {STATUS_ATIVO} desde {r['operacao_iniciada_em']}.")
         elif e < 7:
             st.info("Disponível após concluir a integração e definir o padrinho (Etapa 6).")
+        elif cnpj_pendente(r) or r["doc_status"] != DOC_APROVADA:
+            st.warning(
+                "As etapas 4 a 6 estão concluídas, mas o **CNPJ ainda está pendente**. "
+                "O início das operações libera quando o candidato validar um CNPJ regular "
+                "e o RH aprovar a documentação definitiva na Etapa 3."
+            )
         else:
             st.write("Todas as etapas foram concluídas. Confirme o início das operações.")
             if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary"):
