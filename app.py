@@ -357,44 +357,53 @@ def cnpj_pendente(r):
     return r["cnpj_apto"] != SIM
 
 
-def etapa_atual(r):
+def etapas_concluidas(r):
+    """Situação de cada etapa de onboarding. As etapas correm em paralelo, em qualquer ordem."""
+    return {
+        2: bool(r["form_enviado_em"]) and not cnpj_pendente(r),
+        3: r["doc_status"] in DOCS_LIBERADAS,
+        4: r["contrato_assinado"] == SIM,
+        5: all(r[k] == SIM for k in ("ti_email", "ti_looker", "ti_propostas")),
+        6: bool(r["padrinho"]) and all(r[k] == SIM for k in ("onb_material", "onb_metas", "onb_cultura")),
+    }
+
+
+NOMES_CURTOS = {2: "CNPJ/Formulário", 3: "Documentos", 4: "Contrato", 5: "Acessos", 6: "Integração"}
+
+
+def pendencias(r):
+    return [NOMES_CURTOS[k] for k, ok in etapas_concluidas(r).items() if not ok]
+
+
+def fase(r):
+    """1 = entrevista, 2 = onboarding, 8 = ativo."""
     if r["status_final"] == STATUS_ATIVO:
-        return 8  # concluído
+        return 8
     if r["status_entrevista"] != "Aprovado":
         return 1
-    if not r["form_enviado_em"]:
-        return 2
-    if cnpj_pendente(r) and r["doc_status"] != DOC_APROVADA_PEND:
-        return 2  # sem CNPJ regular e o RH ainda não liberou com pendência
-    if r["doc_status"] not in DOCS_LIBERADAS:
-        return 3
-    if r["contrato_assinado"] != SIM:
-        return 4
-    if not all(r[k] == SIM for k in ("ti_email", "ti_looker", "ti_propostas")):
-        return 5
-    if not (r["padrinho"] and all(r[k] == SIM for k in ("onb_material", "onb_metas", "onb_cultura"))):
-        return 6
-    return 7
+    return 2
 
 
 def rotulo_etapa(r):
-    e = etapa_atual(r)
-    if e == 8:
+    f = fase(r)
+    if f == 8:
         return STATUS_ATIVO
-    if e == 1:
+    if f == 1:
         return f"1. Entrevistas ({r['status_entrevista'] or '-'})"
-    if e == 2 and r["form_enviado_em"] and cnpj_pendente(r):
-        return "2. Aguardando CNPJ (RH pode liberar com pendência)"
-    if e == 3 and r["doc_status"] == "Reprovada":
-        return "3. Documentação reprovada"
-    if e >= 3 and (cnpj_pendente(r) or r["doc_status"] == DOC_APROVADA_PEND):
-        return f"{ETAPAS[e]} · CNPJ pendente"
-    return ETAPAS[e]
+    pend = pendencias(r)
+    if not pend:
+        return "Onboarding concluído · aguardando início"
+    return "Onboarding · falta: " + ", ".join(pend)
 
 
 def barra_progresso(r):
-    e = etapa_atual(r)
-    st.progress(min(e - 1, 7) / 7, text=f"Etapa atual: **{rotulo_etapa(r)}**")
+    if fase(r) == 8:
+        st.progress(1.0, text=f"**{STATUS_ATIVO}**")
+        return
+    feitas = etapas_concluidas(r)
+    n = sum(feitas.values())
+    marcas = " · ".join(f"{'✅' if ok else '⬜'} {NOMES_CURTOS[k]}" for k, ok in feitas.items())
+    st.progress(n / len(feitas), text=f"**{n} de {len(feitas)} etapas concluídas**  ·  {marcas}")
 
 
 # =============================================================================
@@ -620,23 +629,24 @@ def visao_geral():
         st.info("Nenhum candidato cadastrado ainda. Comece pela aba **Etapa 1 · Entrevistas**.")
         return
     df["etapa"] = df.apply(rotulo_etapa, axis=1)
-    df["n_etapa"] = df.apply(etapa_atual, axis=1)
+    df["n_etapa"] = df.apply(fase, axis=1)
     df["situacao_cnpj_pj"] = df.apply(
         lambda r: "" if not r["form_enviado_em"] else ("Regular" if r["cnpj_apto"] == SIM else "Pendente"), axis=1)
     cols = st.columns(5)
     cols[0].metric("Candidatos", len(df))
     cols[1].metric("Em entrevista", int((df["status_entrevista"] == "Em Entrevista").sum()))
-    cols[2].metric("Em onboarding", int(df["n_etapa"].between(2, 7).sum()))
+    cols[2].metric("Em onboarding", int((df["n_etapa"] == 2).sum()))
     cols[3].metric("CNPJ pendente", int(((df["situacao_cnpj_pj"] == "Pendente") & (df["n_etapa"] < 8)).sum()))
     cols[4].metric("Ativos", int((df["status_final"] == STATUS_ATIVO).sum()))
 
-    filtro = st.multiselect("Filtrar por etapa", sorted(df["etapa"].unique()))
-    vis = df[df["etapa"].isin(filtro)] if filtro else df
+    df["pendentes"] = df.apply(lambda r: pendencias(r) if fase(r) == 2 else [], axis=1)
+    filtro = st.multiselect("Filtrar prestadores com pendência em", list(NOMES_CURTOS.values()))
+    vis = df[df["pendentes"].apply(lambda p: all(f in p for f in filtro))] if filtro else df
     st.dataframe(
         vis[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "etapa", "situacao_cnpj_pj", "padrinho",
              "atualizado_em"]]
         .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail", "telefone": "Telefone",
-                         "status_entrevista": "Entrevista", "etapa": "Etapa atual", "situacao_cnpj_pj": "CNPJ",
+                         "status_entrevista": "Entrevista", "etapa": "Situação", "situacao_cnpj_pj": "CNPJ",
                          "padrinho": "Padrinho", "atualizado_em": "Atualizado em"}),
         hide_index=True, width="stretch",
     )
@@ -715,7 +725,7 @@ def gestao_prestador():
     nomes = {r["id"]: f"{r['nome']} · {rotulo_etapa(r)}" for _, r in df.iterrows()}
     r = buscar(st.selectbox("Prestador", list(nomes), format_func=nomes.get, key="sel_prestador"))
     barra_progresso(r)
-    e = etapa_atual(r)
+    st.caption("As etapas são independentes: preencha cada aba na ordem que for mais conveniente.")
 
     t3, t4, t5, t6, t7 = st.tabs([ETAPAS[3], ETAPAS[4], ETAPAS[5], ETAPAS[6], ETAPAS[7]])
 
@@ -777,80 +787,71 @@ def gestao_prestador():
 
     # ---------------- Etapa 4 ----------------
     with t4:
-        if e < 4:
-            st.info("Disponível após a aprovação da documentação (Etapa 3).")
-        else:
-            enviado = ck(r, "contrato_enviado", "Contrato de parceria enviado para assinatura", "ce")
-            assinado = ck(r, "contrato_assinado", "Contrato assinado por ambas as partes", "ca")
-            if st.button("Salvar contrato", key=f"salva_ct_{r['id']}", type="primary"):
-                if assinado and not enviado:
-                    st.error("Marque o envio antes da assinatura.")
-                else:
-                    atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
-                              contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
-                    st.rerun()
-            if r["contrato_data"]:
-                st.caption(f"Assinatura registrada em {r['contrato_data']}.")
+        enviado = ck(r, "contrato_enviado", "Contrato de parceria enviado para assinatura", "ce")
+        assinado = ck(r, "contrato_assinado", "Contrato assinado por ambas as partes", "ca")
+        if st.button("Salvar contrato", key=f"salva_ct_{r['id']}", type="primary"):
+            if assinado and not enviado:
+                st.error("Marque o envio antes da assinatura.")
+            else:
+                atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
+                          contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
+                st.rerun()
+        if r["contrato_data"]:
+            st.caption(f"Assinatura registrada em {r['contrato_data']}.")
 
     # ---------------- Etapa 5 ----------------
     with t5:
-        if e < 5:
-            st.info("Disponível após a assinatura do contrato (Etapa 4).")
-        else:
-            a = ck(r, "ti_email", "Criação de e-mail corporativo", "ti1")
-            b = ck(r, "ti_looker", "Acesso ao sistema de gestão Looker", "ti2")
-            c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
-            if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
-                atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
-                st.rerun()
+        a = ck(r, "ti_email", "Criação de e-mail corporativo", "ti1")
+        b = ck(r, "ti_looker", "Acesso ao sistema de gestão Looker", "ti2")
+        c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
+        if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
+            atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
+            st.rerun()
 
     # ---------------- Etapa 6 ----------------
     with t6:
-        if e < 6:
-            st.info("Disponível após o provisionamento de todos os acessos (Etapa 5).")
-        else:
-            links = secret("links", {}) or {}
-            materiais = [
-                ("onb_material", "Material de Onboarding (manuais e processos)", "material_onboarding"),
-                ("onb_metas", "Detalhamento de metas e comissionamento", "metas_comissionamento"),
-                ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
-            ]
-            marcados = {}
-            for campo, rotulo, chave_link in materiais:
-                c1, c2 = st.columns([3, 1])
-                with c1:
-                    marcados[campo] = ck(r, campo, f"{rotulo} — apresentado", campo)
-                url = links.get(chave_link) if hasattr(links, "get") else None
-                if url:
-                    c2.link_button("Abrir", url)
-                else:
-                    c2.caption(f"Configure `links.{chave_link}` em secrets")
-            try:
-                di = date.fromisoformat(r["data_integracao"]) if r["data_integracao"] else date.today()
-            except ValueError:
-                di = date.today()
-            data_int = st.date_input("Data da reunião de integração", di, format="DD/MM/YYYY", key=f"di_{r['id']}")
-            padrinho = st.text_input("Padrinho responsável pelo primeiro mês *", r["padrinho"], key=f"pad_{r['id']}")
-            if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
-                atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
-                          **{k: sn(v) for k, v in marcados.items()})
-                st.rerun()
+        links = secret("links", {}) or {}
+        materiais = [
+            ("onb_material", "Material de Onboarding (manuais e processos)", "material_onboarding"),
+            ("onb_metas", "Detalhamento de metas e comissionamento", "metas_comissionamento"),
+            ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
+        ]
+        marcados = {}
+        for campo, rotulo, chave_link in materiais:
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                marcados[campo] = ck(r, campo, f"{rotulo} — apresentado", campo)
+            url = links.get(chave_link) if hasattr(links, "get") else None
+            if url:
+                c2.link_button("Abrir", url)
+            else:
+                c2.caption(f"Configure `links.{chave_link}` em secrets")
+        try:
+            di = date.fromisoformat(r["data_integracao"]) if r["data_integracao"] else date.today()
+        except ValueError:
+            di = date.today()
+        data_int = st.date_input("Data da reunião de integração", di, format="DD/MM/YYYY", key=f"di_{r['id']}")
+        padrinho = st.text_input("Padrinho responsável pelo primeiro mês *", r["padrinho"], key=f"pad_{r['id']}")
+        if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
+            atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
+                      **{k: sn(v) for k, v in marcados.items()})
+            st.rerun()
 
     # ---------------- Etapa 7 ----------------
     with t7:
         if r["status_final"] == STATUS_ATIVO:
             st.success(f"🎉 {STATUS_ATIVO} desde {r['operacao_iniciada_em']}.")
-        elif e < 7:
-            st.info("Disponível após concluir a integração e definir o padrinho (Etapa 6).")
-        elif cnpj_pendente(r) or r["doc_status"] != DOC_APROVADA:
-            st.warning(
-                "As etapas 4 a 6 estão concluídas, mas o **CNPJ ainda está pendente**. "
-                "O início das operações libera quando o candidato validar um CNPJ regular "
-                "e o RH aprovar a documentação definitiva na Etapa 3."
-            )
         else:
-            st.write("Todas as etapas foram concluídas. Confirme o início das operações.")
-            if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary"):
+            pend = pendencias(r)
+            if cnpj_pendente(r) is False and r["doc_status"] == DOC_APROVADA_PEND:
+                pend.append("Aprovação definitiva dos documentos")
+            if pend:
+                st.warning("Ainda há pendências: **" + ", ".join(pend) + "**.")
+                forcar = st.checkbox("Iniciar a operação mesmo com essas pendências", key=f"forca_{r['id']}")
+            else:
+                st.write("Todas as etapas foram concluídas. Confirme o início das operações.")
+                forcar = True
+            if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary", disabled=not forcar):
                 atualizar(r["id"], status_final=STATUS_ATIVO, operacao_iniciada_em=agora())
                 st.balloons()
                 st.rerun()
