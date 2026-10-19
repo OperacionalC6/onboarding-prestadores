@@ -514,6 +514,7 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .kpis {display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px;}
 .kpi {background: #fff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 12px 16px;}
 .kpi b {font-size: 1.6rem; display: block; line-height: 1.2; color: #111827;}
+.kpi b.txt {font-size: 1.15rem; padding: 6px 0 3px;}
 .kpi span {color: #6B7280; font-size: .8rem;}
 .kb-head {display: flex; justify-content: space-between; align-items: center; padding: 8px 12px;
           border-radius: 10px; font-weight: 600; font-size: .86rem; color: #fff; margin-bottom: 6px;}
@@ -535,6 +536,16 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .passo {padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
         background: #F3F4F6; color: #4B5563; border: 1px solid #E5E7EB;}
 .passo.ok {background: #DCFCE7; color: #166534; border-color: #BBF7D0;}
+.barra {height: 8px; background: #E5E7EB; border-radius: 999px; margin: -6px 0 18px; overflow: hidden;}
+.barra span {display: block; height: 100%; background: linear-gradient(90deg, #22C55E, #16A34A);}
+.resumo-card {background: #fff; border: 1px solid; border-left-width: 5px; border-radius: 12px;
+              overflow: hidden; margin-bottom: 6px;}
+.resumo-topo {display: flex; gap: 6px; align-items: center; padding: 8px 12px; font-size: .9rem;}
+.resumo-topo span {margin-left: auto; font-size: .72rem; color: #6B7280;}
+.resumo-card ul {list-style: none; margin: 0; padding: 6px 12px 10px;}
+.resumo-card li {display: flex; gap: 8px; font-size: .85rem; color: #6B7280; padding: 3px 0; margin: 0;}
+.resumo-card li.ok {color: #111827;}
+.resumo-card li small {display: block; color: #6B7280; font-size: .74rem;}
 .campos {display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: .9rem; margin-bottom: 8px;}
 .campos .k {color: #6B7280;}
 .campos .v {color: #111827; word-break: break-word;}
@@ -1124,6 +1135,7 @@ def situacao_ficha(r):
     return txt + (" · falta: " + ", ".join(pend) if pend else " · pronto para iniciar")
 
 
+ABA_RESUMO = "📋 Resumo"
 ABAS_FICHA = ["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
               "5 · Acessos TI", "6 · Integração", "7 · Início"]
 # status: (ícone, cor da borda, cor de fundo, legenda)
@@ -1172,7 +1184,7 @@ def css_abas(r):
     regras = []
     for i, s in enumerate(status_etapas(r), start=1):
         _, borda, fundo, _ = CORES_STATUS[s]
-        sel = f'.st-key-ficha_abas [data-testid="stTab"]:nth-of-type({i})'
+        sel = f'.st-key-ficha_abas [data-testid="stTab"]:nth-of-type({i + 1})'
         regras.append(f"{sel} {{background: {fundo}; border-color: {borda}; box-shadow: inset 0 -3px 0 {borda};}}")
         regras.append(f'{sel}[aria-selected="true"] {{background: #4F46E5; border-color: {borda}; '
                       f"box-shadow: inset 0 -4px 0 {borda};}}")
@@ -1215,14 +1227,16 @@ def ficha_prestador(r):
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
          f'<p><b>{situacao_ficha(r)}</b></p></div>')
 
-    rotulos = rotulos_abas(r)
-    # A aba aberta é guardada pelo número da etapa, porque o ícone do rótulo muda quando o status muda.
-    if st.session_state.get("ficha_abas_de") != r["id"]:  # ficha recém-aberta: começa na primeira etapa pendente
-        idx = next((i for i, s in enumerate(status_etapas(r)) if s != "ok"), 6)
+    rotulos = [ABA_RESUMO] + rotulos_abas(r)
+    # A aba aberta é guardada pela posição, porque o ícone do rótulo muda quando o status muda.
+    # Posição 0 é o resumo; a etapa N (índice N-1 em ABAS_FICHA) fica na posição N.
+    if st.session_state.get("ficha_abas_de") != r["id"]:  # ficha recém-aberta: começa no resumo
+        idx = 0
     else:
-        atual = st.session_state.get("ficha_abas") or rotulos[0]
-        idx = next((i for i, nome in enumerate(ABAS_FICHA) if atual.endswith(nome)), 0)
-    idx = st.session_state.pop("ficha_ir", idx)
+        atual = st.session_state.get("ficha_abas") or ABA_RESUMO
+        idx = next((i + 1 for i, nome in enumerate(ABAS_FICHA) if atual.endswith(nome)), 0)
+    if "ficha_ir" in st.session_state:
+        idx = st.session_state.pop("ficha_ir") + 1
     st.session_state["ficha_abas_de"] = r["id"]
     st.session_state["ficha_abas"] = rotulos[idx]
     estilo, legenda = css_abas(r)
@@ -1230,19 +1244,85 @@ def ficha_prestador(r):
     st.caption(legenda)
     abas = st.tabs(rotulos, key="ficha_abas", on_change="rerun")
     with abas[0]:
-        aba_entrevista(r)
+        aba_resumo(r)
     with abas[1]:
-        aba_formalizacao(r)
+        aba_entrevista(r)
     with abas[2]:
-        aba_documentos(r)
+        aba_formalizacao(r)
     with abas[3]:
-        aba_contrato(r)
+        aba_documentos(r)
     with abas[4]:
-        aba_acessos(r)
+        aba_contrato(r)
     with abas[5]:
-        aba_integracao(r)
+        aba_acessos(r)
     with abas[6]:
+        aba_integracao(r)
+    with abas[7]:
         aba_inicio(r)
+
+
+def checklist_etapas(r):
+    """Itens de cada etapa para o resumo: (concluído, item, detalhe)."""
+    def arq(v):
+        return "anexado" if v else ""
+    acessos = [("ti_email", "E-mail corporativo"), ("ti_looker", "Looker"), ("ti_propostas", "Sistema de propostas")]
+    materiais = [("onb_material", "Material de onboarding"), ("onb_metas", "Metas e comissionamento"),
+                 ("onb_cultura", "Cultura e código de conduta")]
+    cnpj_txt = fmt_cnpj(r["cnpj"]) if r["possui_cnpj"] == SIM else ("não possui" if r["possui_cnpj"] == "Não" else "")
+    return [
+        [(r["status_entrevista"] == "Aprovado", "Entrevista aprovada", r["status_entrevista"]),
+         (bool(r["curriculo"]), "Currículo", arq(r["curriculo"])),
+         (bool(r["avaliacao_nota"]), "Avaliação de perfil", f"nota {r['avaliacao_nota']}" if r["avaliacao_nota"] else "")],
+        [(bool(r["form_enviado_em"]), "Formulário enviado", data_br(r["form_enviado_em"])),
+         (bool(r["cpf"]) and bool(r["endereco"]), "Dados pessoais e endereço", r["cidade"] and f"{r['cidade']}/{r['uf']}"),
+         (r["possui_cnpj"] == SIM, "CNPJ", cnpj_txt),
+         (r["possui_cnpj"] == SIM and not cnpj_pendente(r), "CNPJ dentro das regras",
+          "MEI: " + (r["is_mei"] or "—") + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
+          if r["possui_cnpj"] == SIM else ""),
+         (bool(r["cartao_cnpj"]), "Cartão CNPJ", arq(r["cartao_cnpj"]))],
+        [(r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
+         (r["doc_status"] == DOC_APROVADA, "Aprovação definitiva", r["doc_obs"])],
+        [(r["contrato_enviado"] == SIM, "Contrato enviado", ""),
+         (r["contrato_assinado"] == SIM, "Contrato assinado", data_br(r["contrato_data"])),
+         (bool(r["contrato_arquivo"]), "Contrato assinado anexado", arq(r["contrato_arquivo"]))],
+        [(r[c] == SIM, nome, r[f"{c}_usuario"]) for c, nome in acessos],
+        [(r[c] == SIM, nome, "apresentado" if r[c] == SIM else "") for c, nome in materiais]
+        + [(bool(r["data_integracao"]), "Reunião de integração",
+            date.fromisoformat(r["data_integracao"]).strftime("%d/%m/%Y") if r["data_integracao"] else ""),
+           (bool(r["padrinho"]), "Padrinho", r["padrinho"])],
+        [(r["status_final"] == STATUS_ATIVO, STATUS_ATIVO, data_br(r["operacao_iniciada_em"]))],
+    ]
+
+
+def aba_resumo(r):
+    status = status_etapas(r)
+    itens = checklist_etapas(r)
+    feitos = sum(ok for etapa in itens for ok, _, _ in etapa)
+    total = sum(len(etapa) for etapa in itens)
+    etapas_ok = sum(s == "ok" for s in status)
+    html('<div class="kpis">'
+         f'<div class="kpi"><b>{etapas_ok} de 7</b><span>etapas concluídas</span></div>'
+         f'<div class="kpi"><b>{feitos} de {total}</b><span>itens do checklist</span></div>'
+         f'<div class="kpi"><b class="txt">{esc(r["status_entrevista"] or "—")}</b><span>entrevista</span></div>'
+         f'<div class="kpi"><b class="txt">{esc(r["avaliacao_nota"] or "—")}</b><span>nota da avaliação</span></div>'
+         f'<div class="kpi"><b class="txt">{esc(r["status_final"] or "Em onboarding")}</b><span>situação</span></div>'
+         "</div>")
+    html(f'<div class="barra"><span style="width:{round(100 * feitos / total)}%"></span></div>')
+    for i, (nome, s, lista) in enumerate(zip(ABAS_FICHA, status, itens)):
+        if i % 3 == 0:
+            colunas = st.columns(3)  # uma linha por vez, para a leitura seguir a ordem das etapas
+        icone, borda, fundo, legenda = CORES_STATUS[s]
+        linhas = "".join(
+            f'<li class="{"ok" if ok else ""}"><span>{"✅" if ok else "⬜"}</span>'
+            f'<div>{esc(item)}{f"<small>{esc(det)}</small>" if det else ""}</div></li>'
+            for ok, item, det in lista)
+        with colunas[i % 3]:
+            html(f'<div class="resumo-card" style="border-color:{borda}">'
+                 f'<div class="resumo-topo" style="background:{fundo}">{icone} <b>{esc(nome)}</b>'
+                 f'<span>{legenda}</span></div><ul>{linhas}</ul></div>')
+            if st.button("Abrir etapa", key=f"ir_{i}_{r['id']}", width="stretch"):
+                st.session_state["ficha_ir"] = i
+                st.rerun()
 
 
 def aba_entrevista(r):
