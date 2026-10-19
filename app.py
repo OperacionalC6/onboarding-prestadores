@@ -36,6 +36,7 @@ import streamlit as st
 st.set_page_config(page_title="Onboarding de Prestadores", page_icon="🤝", layout="wide")
 
 CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
+VAGAS = ["Operador EGV", "Gerente de Negócios", "Gestor Comercial"]
 STATUS_ENTREVISTA = ["Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
@@ -913,11 +914,11 @@ def novo_candidato():
         nome = c1.text_input("Nome *")
         email = c2.text_input("E-mail *")
         tel = c1.text_input("Telefone *")
-        vaga = c2.text_input("Vaga / Cargo *")
+        vaga = c2.selectbox("Vaga / Cargo *", VAGAS, index=None, placeholder="Selecione a vaga")
         status = st.selectbox("Status da entrevista", STATUS_ENTREVISTA)
         cv = st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"])
         if st.form_submit_button("Cadastrar", type="primary", width="stretch"):
-            if not all([nome.strip(), email.strip(), tel.strip(), vaga.strip()]):
+            if not all([nome.strip(), email.strip(), tel.strip(), vaga]):
                 st.error("Preencha todos os campos.")
             elif "@" not in email:
                 st.error("E-mail inválido.")
@@ -1024,14 +1025,17 @@ def ficha_prestador(r):
 
 
 def aba_entrevista(r):
-    c1, c2 = st.columns([1, 2])
+    c0, c1, c2 = st.columns([1, 1, 2])
+    opcoes_vaga = VAGAS + ([r["vaga"]] if r["vaga"] and r["vaga"] not in VAGAS else [])
+    nova_vaga = c0.selectbox("Vaga / Cargo", opcoes_vaga, index=opcoes_vaga.index(r["vaga"]) if r["vaga"] else 0,
+                             key=f"vaga_{r['id']}")
     novo_status = c1.selectbox("Status da entrevista", STATUS_ENTREVISTA,
                                index=STATUS_ENTREVISTA.index(r["status_entrevista"])
                                if r["status_entrevista"] in STATUS_ENTREVISTA else 0, key=f"st_{r['id']}")
     obs = c2.text_input("Observações da entrevista", r["obs_entrevista"], key=f"obs_{r['id']}")
-    if st.button("Salvar status", key=f"salva_st_{r['id']}", type="primary"):
-        atualizar(r["id"], status_entrevista=novo_status, obs_entrevista=obs)
-        st.success("Status atualizado.")
+    if st.button("Salvar", key=f"salva_st_{r['id']}", type="primary"):
+        atualizar(r["id"], vaga=nova_vaga, status_entrevista=novo_status, obs_entrevista=obs)
+        st.success("Dados da entrevista atualizados.")
         st.rerun()
 
     st.markdown("##### Currículo")
