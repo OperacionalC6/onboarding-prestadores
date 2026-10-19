@@ -297,13 +297,37 @@ def _parse_cnpjws(d):
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def _parse_receitaws(d):
+    if d.get("status") == "ERROR":
+        raise LookupError(d.get("message", ""))
+    simei = d.get("simei") or {}
+    principais = [so_digitos(x.get("code", "")) for x in (d.get("atividade_principal") or [])]
+    secundarios = [so_digitos(x.get("code", "")) for x in (d.get("atividades_secundarias") or [])]
+    return {
+        "razao_social": d.get("nome", ""),
+        "natureza_juridica": d.get("natureza_juridica", ""),
+        "situacao": (d.get("situacao") or "").upper(),
+        # O ReceitaWS gratuito nem sempre informa o SIMEI; sem essa informação o candidato declara.
+        "is_mei": simei.get("optante") if "optante" in simei else None,
+        "cnae_principal": principais[0] if principais else "",
+        "cnaes_secundarios": [x for x in principais[1:] + secundarios if x and set(x) != {"0"}],
+        "fonte": "ReceitaWS",
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def consultar_cnpj(cnpj):
-    """Retorna dict com status: ok | nao_encontrado | indisponivel."""
+    """Retorna dict com status: ok | nao_encontrado | indisponivel.
+
+    BrasilAPI e CNPJ.ws usam a base pública da Receita, atualizada cerca de uma vez por mês:
+    CNPJs abertos há poucas semanas ainda não aparecem nelas. O ReceitaWS consulta a Receita
+    de forma mais direta e costuma achar CNPJs novos (limite gratuito de 3 consultas/minuto).
+    """
     c = so_digitos(cnpj)
     fontes = [
         (f"https://brasilapi.com.br/api/cnpj/v1/{c}", _parse_brasilapi),
         (f"https://publica.cnpj.ws/cnpj/{c}", _parse_cnpjws),
+        (f"https://receitaws.com.br/v1/cnpj/{c}", _parse_receitaws),
     ]
     nao_encontrado = False
     for url, parser in fontes:
@@ -316,6 +340,8 @@ def consultar_cnpj(cnpj):
             dados = parser(r.json())
             dados["status"] = "ok"
             return dados
+        except LookupError:
+            nao_encontrado = True
         except Exception:
             continue
     return {"status": "nao_encontrado" if nao_encontrado else "indisponivel"}
@@ -406,8 +432,13 @@ Depois de abrir a empresa, volte a este formulário com o mesmo código de acess
 # =============================================================================
 # ETAPA ATUAL / PROGRESSO
 # =============================================================================
+def cnpj_declarado(r):
+    """CNPJ que não estava nas bases públicas e ainda não foi conferido pelo RH no cartão."""
+    return r["possui_cnpj"] == SIM and "declara" in r["fonte_validacao"].lower()
+
+
 def cnpj_pendente(r):
-    return r["cnpj_apto"] != SIM
+    return r["cnpj_apto"] != SIM or cnpj_declarado(r)
 
 
 def etapas_concluidas(r):
@@ -765,35 +796,59 @@ def formulario_candidato(r, prefixo="cand"):
             st.caption("Clique em **Validar CNPJ** para conferirmos MEI e CNAE automaticamente.")
         elif res["status"] == "invalido":
             st.error("CNPJ inválido. Confira os números digitados.")
-        elif res["status"] == "nao_encontrado":
-            st.error("CNPJ não encontrado na base da Receita Federal.")
         else:
+            declarado = False
             if res["status"] == "ok":
                 cnaes = [res["cnae_principal"]] + res["cnaes_secundarios"]
                 tem_cnae = CNAE_EXIGIDO in [so_digitos(x).zfill(7) for x in cnaes if x]
-                is_mei, situacao, fonte = res["is_mei"], res["situacao"], f"Automática ({res['fonte']})"
+                situacao, fonte = res["situacao"], f"Automática ({res['fonte']})"
                 st.write(f"**{res['razao_social']}** · {res['natureza_juridica']} · Situação: {situacao}")
                 col_a, col_b = st.columns(2)
-                col_a.metric("Enquadrado como MEI?", "Sim ❌" if is_mei else "Não ✅")
                 col_b.metric(f"CNAE {fmt_cnae(CNAE_EXIGIDO)}?", "Sim ✅" if tem_cnae else "Não ❌")
-            else:  # indisponivel -> declaração manual
-                st.warning("Não conseguimos consultar a Receita agora. Responda abaixo; o RH vai conferir no cartão CNPJ.")
+                if res["is_mei"] is None:  # a fonte não informou o SIMEI
+                    is_mei = col_a.radio("A empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1,
+                                         key=k("mei_ws")) == "Sim"
+                    fonte += " · MEI declarado"
+                    declarado = True
+                else:
+                    is_mei = res["is_mei"]
+                    col_a.metric("Enquadrado como MEI?", "Sim ❌" if is_mei else "Não ✅")
+            else:  # não encontrado ou fontes fora do ar -> declaração conferida pelo RH no cartão
+                if res["status"] == "nao_encontrado":
+                    st.warning(
+                        "Não encontramos este CNPJ nas bases públicas da Receita. **Isso é normal para CNPJs abertos "
+                        "há poucas semanas**: essas bases são atualizadas cerca de uma vez por mês. "
+                        "Responda abaixo e anexe o Cartão CNPJ; o RH vai conferir."
+                    )
+                    fonte = "Declaração do candidato (CNPJ ainda fora das bases públicas)"
+                else:
+                    st.warning("Não conseguimos consultar a Receita agora. Responda abaixo e anexe o Cartão CNPJ; "
+                               "o RH vai conferir.")
+                    fonte = "Declaração do candidato (consulta indisponível)"
                 is_mei = st.radio("A empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1, key=k("mei")) == "Sim"
                 tem_cnae = st.radio(f"O CNPJ possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)?",
                                     ["Sim", "Não"], horizontal=True, key=k("cnae")) == "Sim"
-                situacao, fonte = "", "Declaração do candidato (API indisponível)"
+                situacao = ""
+                declarado = True
                 res = {**res, "razao_social": "", "natureza_juridica": "", "cnae_principal": "", "cnaes_secundarios": []}
 
             apto, pend = avaliar_regras(is_mei, tem_cnae, situacao)
-            if apto:
+            confirmou = True
+            if apto and declarado:
+                confirmou = st.checkbox("Declaro que essas informações conferem com o Cartão CNPJ que vou anexar.",
+                                        key=k("declaro"))
+            if apto and confirmou:
                 st.success("O CNPJ atende aos requisitos. Anexe o Cartão CNPJ para concluir.")
                 arquivo = st.file_uploader("Cartão CNPJ (PDF ou imagem) *", type=["pdf", "png", "jpg", "jpeg"],
                                            key=k("cartao"))
+            elif apto:
+                st.info("Marque a declaração acima para anexar o Cartão CNPJ.")
             else:
                 st.error("O CNPJ precisa de regularização antes de seguir:")
                 for p in pend:
                     st.markdown(f"- {p}")
                 st.caption("Dá para enviar os dados pessoais agora e voltar com o CNPJ regularizado.")
+            apto = apto and confirmou
 
             cnpj_info = {
                 "possui_cnpj": "Sim", "cnpj": so_digitos(cnpj),
@@ -996,7 +1051,7 @@ def base_completa():
         return
     df["situacao"] = df.apply(rotulo_etapa, axis=1)
     df["cnpj_sit"] = df.apply(
-        lambda r: "" if not r["form_enviado_em"] else ("Regular" if r["cnpj_apto"] == SIM else "Pendente"), axis=1)
+        lambda r: "" if not r["form_enviado_em"] else ("Regular" if not cnpj_pendente(r) else "Pendente"), axis=1)
     st.dataframe(
         df[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "avaliacao_nota",
             "situacao", "cnpj_sit", "padrinho", "atualizado_em"]]
@@ -1142,8 +1197,9 @@ def aba_formalizacao(r):
         st.info("O candidato ainda não foi aprovado na entrevista. Você já pode adiantar a formalização, se quiser.")
     if r["form_enviado_em"]:
         situ = "✅ CNPJ regular" if not cnpj_pendente(r) else (
-            "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else "⚠️ CNPJ fora das regras")
-        st.success(f"Formulário enviado em {r['form_enviado_em']} · {situ}")
+            "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else
+            "🔎 CNPJ declarado, conferir na Etapa 3" if cnpj_declarado(r) else "⚠️ CNPJ fora das regras")
+        st.success(f"Formulário enviado em {data_br(r['form_enviado_em'])} · {situ}")
     else:
         st.warning("O candidato ainda não preencheu o formulário.")
 
@@ -1153,6 +1209,26 @@ def aba_formalizacao(r):
 
     with st.expander("✏️ Preencher ou corrigir a Etapa 2 pelo candidato", expanded=not r["form_enviado_em"]):
         formulario_candidato(r, prefixo="rh")
+
+
+def validacao_manual_cnpj(r):
+    """CNPJs recém-abertos não aparecem nas bases públicas: o RH confere no cartão e valida aqui."""
+    with st.container(border=True):
+        st.markdown("**🔎 Validar CNPJ pelo cartão**")
+        st.caption("As bases públicas ainda não tinham este CNPJ (comum em empresas abertas há poucas semanas), "
+                   "então o candidato declarou os dados. Abra o cartão CNPJ acima, ou consulte no site da "
+                   "Receita Federal, e confirme.")
+        st.link_button("Abrir consulta na Receita Federal",
+                       "https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp")
+        ativa = st.checkbox("Situação cadastral ATIVA", key=f"mv_ativa_{r['id']}")
+        nao_mei = st.checkbox("Não é MEI (natureza jurídica diferente de MEI)", key=f"mv_mei_{r['id']}")
+        cnae = st.checkbox(f"Possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (principal ou secundário)", key=f"mv_cnae_{r['id']}")
+        if st.button("✅ Confirmar validação do CNPJ", key=f"mv_ok_{r['id']}",
+                     disabled=not (ativa and nao_mei and cnae)):
+            atualizar(r["id"], is_mei="Não", tem_cnae=SIM, situacao_cnpj="ATIVA", cnpj_apto=SIM,
+                      fonte_validacao=f"Conferido pelo RH no cartão CNPJ em {data_br(agora())}")
+            avisar("CNPJ validado pelo RH.")
+            st.rerun()
 
 
 def aba_documentos(r):
@@ -1177,13 +1253,18 @@ def aba_documentos(r):
             "Validação": r["fonte_validacao"], "Apto": r["cnpj_apto"],
         }))
         mostrar_arquivo(r["cartao_cnpj"], "Cartão CNPJ", key=f"dl_cartao_{r['id']}")
-    if r["fonte_validacao"].startswith("Declaração"):
-        st.warning("A validação foi declarada pelo candidato. Confira MEI e CNAE no cartão CNPJ.")
+    if cnpj_declarado(r):
+        validacao_manual_cnpj(r)
     st.write(f"Status da documentação: **{r['doc_status'] or 'Pendente'}**")
     obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"], key=f"docobs_{r['id']}")
     b1, b2 = st.columns(2)
     if cnpj_pendente(r):
-        motivo = "não tem CNPJ" if r["possui_cnpj"] == "Não" else "tem CNPJ fora das regras (MEI, CNAE ou situação)"
+        if r["possui_cnpj"] == "Não":
+            motivo = "não tem CNPJ"
+        elif r["cnpj_apto"] == SIM:
+            motivo = "tem CNPJ ainda não conferido pelo RH (use o bloco acima)"
+        else:
+            motivo = "tem CNPJ fora das regras (MEI, CNAE ou situação)"
         st.warning(f"O candidato {motivo}. Você pode **aprovar com o CNPJ pendente** e seguir com as outras etapas. "
                    "Quando o CNPJ for regularizado, volte aqui para a aprovação definitiva.")
         if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
