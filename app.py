@@ -542,6 +542,27 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 </style>
 """
 
+# Tela do prestador: sem barra lateral e com o login em destaque.
+CSS_CANDIDATO = """
+<style>
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="stExpandSidebarButton"] {display: none;}
+.st-key-btn_acesso_rh, .st-key-btn_voltar_cand {position: fixed; top: 58px; right: 22px; z-index: 999990; width: auto;}
+.st-key-btn_acesso_rh button, .st-key-btn_voltar_cand button {color: #9CA3AF; font-size: .78rem; min-height: 0; padding: 2px 6px;}
+.st-key-btn_acesso_rh button p, .st-key-btn_voltar_cand button p {font-size: .78rem;}
+.st-key-btn_acesso_rh button:hover, .st-key-btn_voltar_cand button:hover {color: #4F46E5;}
+.login-cand {text-align: center; margin: 7vh 0 22px;}
+.login-icone {font-size: 3.6rem; line-height: 1; margin-bottom: 10px;}
+.login-cand h1 {font-size: 2.5rem; font-weight: 800; color: #1F2937; padding: 0; margin: 0 0 10px; letter-spacing: -0.02em;}
+.login-cand p {font-size: 1.15rem; color: #6B7280; margin: 0;}
+.st-key-login_cand {background: #fff; border: 1px solid #E5E7EB; border-radius: 20px; padding: 28px 30px 30px;
+                    box-shadow: 0 12px 32px rgba(79, 70, 229, .10);}
+.st-key-login_cand label p {font-size: 1.05rem; font-weight: 600; color: #374151;}
+.st-key-login_cand input {font-size: 1.25rem; padding: 14px 16px;}
+.st-key-login_cand [data-testid="stFormSubmitButton"] button {min-height: 3.4rem; border-radius: 12px; margin-top: 8px;}
+.st-key-login_cand [data-testid="stFormSubmitButton"] button p {font-size: 1.2rem; font-weight: 700;}
+</style>
+"""
+
 KANBAN = [
     ("entrevista", "🗣️ Entrevista", "#6366F1"),
     (2, "📝 Formalização", "#0EA5E9"),
@@ -638,16 +659,26 @@ def pendencias_cnpj(r):
     return pend or ["Confira o CNPJ informado e valide de novo."]
 
 
+def botao_acesso_rh():
+    """Botão discreto no canto superior direito que leva ao login do RH."""
+    if st.button("Acesso RH", key="btn_acesso_rh", type="tertiary"):
+        st.session_state["modo"] = "rh"
+        st.rerun()
+
+
 def tela_candidato():
     pid = st.session_state.get("cand_id")
     if not pid:
-        html('<div class="hero"><h2>🤝 Bem-vindo ao onboarding</h2>'
-             '<p>Informe o código de acesso que você recebeu do RH e o seu e-mail.</p></div>')
-        _, meio, _ = st.columns([1, 2, 1])
-        with meio, st.form("login_cand"):
-            codigo = st.text_input("Código de acesso").strip().upper()
-            email = st.text_input("E-mail").strip().lower()
-            if st.form_submit_button("Acessar", type="primary", width="stretch"):
+        botao_acesso_rh()
+        _, meio, _ = st.columns([1, 1.6, 1])
+        with meio:
+            html('<div class="login-cand"><div class="login-icone">🤝</div>'
+                 '<h1>Bem-vindo ao seu onboarding</h1>'
+                 '<p>Digite o código de acesso que você recebeu do RH e o seu e-mail para continuar.</p></div>')
+        with meio, st.container(key="login_cand"), st.form("form_login_cand", border=False):
+            codigo = st.text_input("Código de acesso", placeholder="Ex.: A1B2C3").strip().upper()
+            email = st.text_input("E-mail", placeholder="seu@email.com").strip().lower()
+            if st.form_submit_button("Acessar meu onboarding", type="primary", width="stretch"):
                 df = carregar()
                 achou = df[(df["codigo_acesso"] == codigo) & (df["email"] == email)]
                 if achou.empty:
@@ -919,6 +950,9 @@ def login_rh():
     if st.session_state.get("rh_ok"):
         return True
     senha_cfg = secret("rh_password", "rh123")
+    if st.button("← Acesso do prestador", key="btn_voltar_cand", type="tertiary"):
+        st.session_state["modo"] = "candidato"
+        st.rerun()
     html('<div class="hero"><h2>🔒 Painel de Controle · RH</h2><p>Acesso restrito à equipe de RH.</p></div>')
     _, meio, _ = st.columns([1, 2, 1])
     with meio:
@@ -1106,8 +1140,8 @@ def sn(v):
 
 
 def mensagem_acesso(r):
-    return (f"Olá, {r['nome'].split(' ')[0]}! Para seguir com o seu onboarding, acesse o link do sistema, "
-            f"escolha \"Visão do Candidato\" e entre com:\n"
+    return (f"Olá, {r['nome'].split(' ')[0]}! Para seguir com o seu onboarding, acesse "
+            f"{secret('app_url', 'https://ehsonboard.streamlit.app')} e entre com:\n"
             f"Código de acesso: {r['codigo_acesso']}\nE-mail: {r['email']}")
 
 
@@ -1671,17 +1705,23 @@ def comparativo():
 # =============================================================================
 html(CSS)
 mostrar_aviso()
-with st.sidebar:
-    st.markdown("### 🤝 Onboarding de Prestadores")
-    tela = st.radio("Menu", ["Visão do Candidato / Formulário", "Painel de Controle / RH"], label_visibility="collapsed")
-    st.divider()
-    st.caption("Armazenamento: " + ("Google Sheets ✅" if usa_sheets() else "CSV local (demonstração)"))
-    if st.session_state.get("rh_ok") and st.button("Sair do painel RH"):
-        st.session_state.pop("rh_ok")
-        st.session_state.pop("ficha", None)
-        st.rerun()
+# O acesso padrão é o do prestador; o RH entra pelo botão discreto do canto ou pelo link ?rh=1.
+if "modo" not in st.session_state:
+    st.session_state["modo"] = "rh" if st.query_params.get("rh") else "candidato"
 
-if tela.startswith("Visão do Candidato"):
+if st.session_state["modo"] == "candidato":
+    html(CSS_CANDIDATO)
     tela_candidato()
 else:
+    if st.session_state.get("rh_ok"):
+        with st.sidebar:
+            st.markdown("### 🤝 Onboarding de Prestadores")
+            st.caption("Armazenamento: " + ("Google Sheets ✅" if usa_sheets() else "CSV local (demonstração)"))
+            if st.button("Sair do painel RH", width="stretch"):
+                for chave in ("rh_ok", "ficha"):
+                    st.session_state.pop(chave, None)
+                st.session_state["modo"] = "candidato"
+                st.rerun()
+    else:
+        html(CSS_CANDIDATO)
     tela_rh()
