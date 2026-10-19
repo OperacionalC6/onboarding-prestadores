@@ -66,9 +66,9 @@ COLUNAS = [
     # Etapa 3
     "doc_status", "doc_obs", "doc_validado_em",
     # Etapa 4
-    "contrato_enviado", "contrato_assinado", "contrato_data",
+    "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
     # Etapa 5
-    "ti_email", "ti_looker", "ti_propostas",
+    "ti_email", "ti_looker", "ti_propostas", "ti_email_usuario", "ti_looker_usuario", "ti_propostas_usuario",
     # Etapa 6
     "onb_material", "onb_metas", "onb_cultura", "data_integracao", "padrinho",
     # Etapa 7
@@ -209,7 +209,7 @@ def criar(nome, email, telefone, vaga, status):
 
 
 def guardar_arquivo(pid, arquivo):
-    """Salva um anexo (cartão CNPJ, currículo) no Google Drive (se configurado) ou em disco local."""
+    """Salva um anexo (cartão CNPJ, currículo, contrato) no Google Drive (se configurado) ou em disco local."""
     nome = f"{pid}_{re.sub(r'[^A-Za-z0-9._-]', '_', arquivo.name)}"
     conteudo = arquivo.getvalue()
     pasta = secret("drive_folder_id")
@@ -1096,7 +1096,8 @@ def mostrar_arquivo(valor, rotulo, key):
 
 
 def ck(r, campo, rotulo, key):
-    return st.checkbox(rotulo, value=r[campo] == SIM, key=f"{key}_{r['id']}")
+    # A chave muda a cada salvamento para a caixa refletir o que foi gravado (ex.: marcada ao anexar o contrato).
+    return st.checkbox(rotulo, value=r[campo] == SIM, key=f"{key}_{r['id']}_{r['atualizado_em']}")
 
 
 def sn(v):
@@ -1404,24 +1405,52 @@ def aba_documentos(r):
 def aba_contrato(r):
     enviado = ck(r, "contrato_enviado", "Contrato de parceria enviado para assinatura", "ce")
     assinado = ck(r, "contrato_assinado", "Contrato assinado por ambas as partes", "ca")
+    c1, c2 = st.columns([2, 1])
+    arq = c1.file_uploader("Contrato assinado (PDF ou imagem)", type=["pdf", "png", "jpg", "jpeg"],
+                           key=f"up_ct_{r['id']}_{r['atualizado_em']}")
+    with c2:
+        mostrar_arquivo(r["contrato_arquivo"], "Contrato assinado", key=f"dl_ct_{r['id']}")
+    if arq is not None:  # anexar o contrato assinado já marca envio e assinatura
+        enviado = assinado = True
     if st.button("Salvar contrato", key=f"salva_ct_{r['id']}", type="primary"):
         if assinado and not enviado:
             st.error("Marque o envio antes da assinatura.")
+        elif assinado and arq is None and not r["contrato_arquivo"]:
+            st.error("Anexe o contrato assinado para registrar a assinatura.")
         else:
-            atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
-                      contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
+            campos = dict(contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
+                          contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
+            if arq is not None:
+                campos["contrato_arquivo"] = guardar_arquivo(f"{r['id']}_contrato", arq)
+            atualizar(r["id"], **campos)
             avisar("Contrato salvo." + ir_para_proxima(r["id"], 3, True))
             st.rerun()
     if r["contrato_data"]:
-        st.caption(f"Assinatura registrada em {r['contrato_data']}.")
+        st.caption(f"Assinatura registrada em {data_br(r['contrato_data'])}.")
 
 
 def aba_acessos(r):
-    a = ck(r, "ti_email", "Criação de e-mail corporativo", "ti1")
-    b = ck(r, "ti_looker", "Acesso ao sistema de gestão Looker", "ti2")
-    c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
+    acessos = [
+        ("ti_email", "Criação de e-mail corporativo", "E-mail corporativo", "nome@empresa.com.br"),
+        ("ti_looker", "Acesso ao sistema de gestão Looker", "Usuário Looker", ""),
+        ("ti_propostas", "Acesso ao sistema de digitação de propostas", "Usuário do sistema de propostas", ""),
+    ]
+    campos, faltando = {}, []
+    for campo, rotulo, rotulo_usuario, exemplo in acessos:
+        c1, c2 = st.columns([1, 1], vertical_alignment="bottom")
+        with c1:
+            liberado = ck(r, campo, rotulo, campo)
+        usuario = c2.text_input(rotulo_usuario, r[f"{campo}_usuario"], placeholder=exemplo,
+                                key=f"{campo}_usuario_{r['id']}").strip()
+        liberado = liberado or bool(usuario)  # informar o usuário já marca o acesso como liberado
+        if liberado and not usuario:
+            faltando.append(rotulo_usuario)
+        campos[campo], campos[f"{campo}_usuario"] = sn(liberado), usuario
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
-        atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
+        if faltando:
+            st.error("Informe o usuário de: " + ", ".join(faltando) + ".")
+            return
+        atualizar(r["id"], **campos)
         avisar("Acessos salvos." + ir_para_proxima(r["id"], 4, True))
         st.rerun()
 
