@@ -37,6 +37,7 @@ st.set_page_config(page_title="Onboarding de Prestadores", page_icon="🤝", lay
 
 CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 VAGAS = ["Operador EGV", "Gerente de Negócios", "Gestor Comercial"]
+VAGAS_ACEITAM_MEI = {"Operador EGV"}  # nas demais vagas o CNPJ não pode ser MEI
 STATUS_ENTREVISTA = ["Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
@@ -388,12 +389,16 @@ def montar_endereco(d):
     return " · ".join(x for x in partes if x)
 
 
-def avaliar_regras(is_mei, tem_cnae, situacao="ATIVA"):
+def aceita_mei(vaga):
+    return vaga in VAGAS_ACEITAM_MEI
+
+
+def avaliar_regras(is_mei, tem_cnae, situacao="ATIVA", vaga=""):
     """Aplica as regras de negócio. Retorna (apto, lista_de_pendências)."""
     pendencias = []
     if situacao and situacao != "ATIVA":
         pendencias.append(f"O CNPJ está com situação cadastral **{situacao}**. Ele precisa estar **ATIVO**.")
-    if is_mei:
+    if is_mei and not aceita_mei(vaga):
         pendencias.append(
             "Sua empresa está enquadrada como **MEI**, o que não é aceito para esta parceria. "
             "Solicite o desenquadramento do MEI e a migração para ME (Empresário Individual), "
@@ -408,10 +413,16 @@ def avaliar_regras(is_mei, tem_cnae, situacao="ATIVA"):
     return (len(pendencias) == 0, pendencias)
 
 
-ORIENTACOES_SEM_CNPJ = """
+AVISO_SEM_MEI = """
 **Importante: a parceria NÃO aceita MEI (Microempreendedor Individual).**
 O MEI não permite a atividade de promoção de vendas nos moldes da parceria e tem limite de faturamento baixo.
+"""
 
+AVISO_COM_MEI = """
+**Para esta vaga o MEI é aceito.** Se preferir, abra como MEI com o CNAE abaixo; os modelos a seguir também servem.
+"""
+
+ORIENTACOES_SEM_CNPJ = """
 **Modelos jurídicos recomendados**
 - **ME – Empresário Individual (EI):** abertura simples, sem sócios; o patrimônio pessoal não é separado do da empresa.
 - **SLU – Sociedade Limitada Unipessoal:** um único dono com patrimônio pessoal protegido e sem capital mínimo. *Costuma ser a opção mais indicada.*
@@ -607,7 +618,7 @@ def dialogo_envio(info):
         st.markdown("O RH vai conferir a documentação e falar com você sobre o contrato e os próximos passos.")
     elif info["possui"] == "Não":
         st.markdown("Recebemos seus **dados pessoais**.")
-        st.markdown("Assim que abrir o CNPJ (sem ser MEI e com o CNAE 7319-0/02), volte aqui com o mesmo "
+        st.markdown("Assim que abrir o CNPJ (com o CNAE 7319-0/02, seguindo as orientações do formulário), volte aqui com o mesmo "
                     "código de acesso e informe o número.")
     else:
         st.markdown("Recebemos seus **dados pessoais**.")
@@ -619,9 +630,10 @@ def dialogo_envio(info):
 
 def pendencias_cnpj(r):
     if r["possui_cnpj"] == "Não":
-        return ["Você informou que ainda não tem CNPJ. Abra a empresa como ME, SLU ou LTDA (não pode ser MEI), "
+        tipos = "MEI, ME, SLU ou LTDA" if aceita_mei(r["vaga"]) else "ME, SLU ou LTDA (não pode ser MEI)"
+        return [f"Você informou que ainda não tem CNPJ. Abra a empresa como {tipos}, "
                 f"com o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)."]
-    _, pend = avaliar_regras(r["is_mei"] == SIM, r["tem_cnae"] == SIM, r["situacao_cnpj"])
+    _, pend = avaliar_regras(r["is_mei"] == SIM, r["tem_cnae"] == SIM, r["situacao_cnpj"], r["vaga"])
     return pend or ["Confira o CNPJ informado e valide de novo."]
 
 
@@ -776,7 +788,7 @@ def formulario_candidato(r, prefixo="cand"):
     apto = False
 
     if possui == "Não":
-        st.info(ORIENTACOES_SEM_CNPJ)
+        st.info((AVISO_COM_MEI if aceita_mei(r["vaga"]) else AVISO_SEM_MEI) + ORIENTACOES_SEM_CNPJ)
         cnpj_info = {"possui_cnpj": "Não", "cnpj_apto": ""}
     else:
         cnpj = st.text_input("CNPJ *", fmt_cnpj(r["cnpj"]), placeholder="00.000.000/0000-00", key=k("cnpj"))
@@ -812,7 +824,8 @@ def formulario_candidato(r, prefixo="cand"):
                     declarado = True
                 else:
                     is_mei = res["is_mei"]
-                    col_a.metric("Enquadrado como MEI?", "Sim ❌" if is_mei else "Não ✅")
+                    col_a.metric("Enquadrado como MEI?", ("Sim ✅" if aceita_mei(r["vaga"]) else "Sim ❌")
+                                 if is_mei else "Não ✅")
             else:  # não encontrado ou fontes fora do ar -> declaração conferida pelo RH no cartão
                 if res["status"] == "nao_encontrado":
                     st.warning(
@@ -832,7 +845,7 @@ def formulario_candidato(r, prefixo="cand"):
                 declarado = True
                 res = {**res, "razao_social": "", "natureza_juridica": "", "cnae_principal": "", "cnaes_secundarios": []}
 
-            apto, pend = avaliar_regras(is_mei, tem_cnae, situacao)
+            apto, pend = avaliar_regras(is_mei, tem_cnae, situacao, r["vaga"])
             confirmou = True
             if apto and declarado:
                 confirmou = st.checkbox("Declaro que essas informações conferem com o Cartão CNPJ que vou anexar.",
@@ -1221,11 +1234,16 @@ def validacao_manual_cnpj(r):
         st.link_button("Abrir consulta na Receita Federal",
                        "https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp")
         ativa = st.checkbox("Situação cadastral ATIVA", key=f"mv_ativa_{r['id']}")
-        nao_mei = st.checkbox("Não é MEI (natureza jurídica diferente de MEI)", key=f"mv_mei_{r['id']}")
+        if aceita_mei(r["vaga"]):
+            nao_mei = True
+            st.caption(f"Para a vaga {r['vaga']} o MEI é aceito, então não é preciso conferir o enquadramento.")
+        else:
+            nao_mei = st.checkbox("Não é MEI (confira no Portal do Simples Nacional: "
+                                  "o cartão CNPJ de MEI e de ME podem ser iguais)", key=f"mv_mei_{r['id']}")
         cnae = st.checkbox(f"Possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (principal ou secundário)", key=f"mv_cnae_{r['id']}")
         if st.button("✅ Confirmar validação do CNPJ", key=f"mv_ok_{r['id']}",
                      disabled=not (ativa and nao_mei and cnae)):
-            atualizar(r["id"], is_mei="Não", tem_cnae=SIM, situacao_cnpj="ATIVA", cnpj_apto=SIM,
+            atualizar(r["id"], is_mei=r["is_mei"] if aceita_mei(r["vaga"]) else "Não", tem_cnae=SIM, situacao_cnpj="ATIVA", cnpj_apto=SIM,
                       fonte_validacao=f"Conferido pelo RH no cartão CNPJ em {data_br(agora())}")
             avisar("CNPJ validado pelo RH.")
             st.rerun()
