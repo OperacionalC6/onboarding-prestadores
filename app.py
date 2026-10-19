@@ -97,6 +97,13 @@ def agora():
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def data_br(txt):
+    try:
+        return datetime.strptime(txt, "%Y-%m-%d %H:%M").strftime("%d/%m/%Y às %H:%M")
+    except ValueError:
+        return txt
+
+
 def so_digitos(txt):
     return re.sub(r"\D", "", txt or "")
 
@@ -503,6 +510,17 @@ KANBAN = [
 ]
 
 
+def avisar(msg, icone="✅"):
+    """Guarda um aviso para aparecer como notificação no canto da tela depois do st.rerun()."""
+    st.session_state["_aviso"] = (msg, icone)
+
+
+def mostrar_aviso():
+    aviso = st.session_state.pop("_aviso", None)
+    if aviso:
+        st.toast(aviso[0], icon=aviso[1])
+
+
 def html(txt):
     st.markdown(txt, unsafe_allow_html=True)
 
@@ -551,6 +569,31 @@ def barra_progresso(r):
 # =============================================================================
 # VISÃO DO CANDIDATO
 # =============================================================================
+@st.dialog("Dados enviados ✅")
+def dialogo_envio(info):
+    if info["apto"]:
+        st.markdown("Recebemos seus **dados pessoais e o Cartão CNPJ**. 🎉")
+        st.markdown("O RH vai conferir a documentação e falar com você sobre o contrato e os próximos passos.")
+    elif info["possui"] == "Não":
+        st.markdown("Recebemos seus **dados pessoais**.")
+        st.markdown("Assim que abrir o CNPJ (sem ser MEI e com o CNAE 7319-0/02), volte aqui com o mesmo "
+                    "código de acesso e informe o número.")
+    else:
+        st.markdown("Recebemos seus **dados pessoais**.")
+        st.markdown("Seu CNPJ ainda precisa de ajustes. Quando regularizar, volte aqui com o mesmo código e "
+                    "valide de novo.")
+    if st.button("Entendi", type="primary", width="stretch"):
+        st.rerun()
+
+
+def pendencias_cnpj(r):
+    if r["possui_cnpj"] == "Não":
+        return ["Você informou que ainda não tem CNPJ. Abra a empresa como ME, SLU ou LTDA (não pode ser MEI), "
+                f"com o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)."]
+    _, pend = avaliar_regras(r["is_mei"] == SIM, r["tem_cnae"] == SIM, r["situacao_cnpj"])
+    return pend or ["Confira o CNPJ informado e valide de novo."]
+
+
 def tela_candidato():
     pid = st.session_state.get("cand_id")
     if not pid:
@@ -574,6 +617,10 @@ def tela_candidato():
     if r is None:
         st.session_state.pop("cand_id", None)
         st.rerun()
+
+    info_envio = st.session_state.pop("_envio_cand", None)
+    if info_envio:
+        dialogo_envio(info_envio)
 
     topo1, topo2 = st.columns([5, 1])
     with topo1:
@@ -608,11 +655,19 @@ def tela_candidato():
                               "Razão social": r["razao_social"]}))
         return
 
+    if r["doc_status"] != "Reprovada" and r["form_enviado_em"]:
+        st.success(f"✅ Recebemos seus dados pessoais em {data_br(r['form_enviado_em'])}.")
+        with st.container(border=True):
+            st.markdown("##### ⚠️ Falta regularizar o CNPJ")
+            for p in pendencias_cnpj(r):
+                st.markdown(f"- {p}")
+            st.caption("Quando estiver tudo certo, abra a seção abaixo, informe o CNPJ e envie de novo.")
+        with st.expander("✏️ Atualizar meus dados ou informar o CNPJ"):
+            formulario_candidato(r)
+        return
+
     if r["doc_status"] == "Reprovada":
         st.error(f"O RH pediu ajustes na sua documentação: {r['doc_obs'] or 'veja com o RH.'}")
-    elif r["form_enviado_em"]:
-        st.warning("Recebemos seus dados pessoais. Falta regularizar o CNPJ. Atualize abaixo quando estiver pronto.")
-
     with st.container(border=True):
         formulario_candidato(r)
 
@@ -781,7 +836,10 @@ def formulario_candidato(r, prefixo="cand"):
         if apto and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
-        st.success("Dados salvos com sucesso!")
+        if prefixo == "cand":
+            st.session_state["_envio_cand"] = {"apto": apto, "possui": possui}
+        else:
+            avisar("Etapa 2 salva.")
         st.rerun()
 
 
@@ -1035,7 +1093,7 @@ def aba_entrevista(r):
     obs = c2.text_input("Observações da entrevista", r["obs_entrevista"], key=f"obs_{r['id']}")
     if st.button("Salvar", key=f"salva_st_{r['id']}", type="primary"):
         atualizar(r["id"], vaga=nova_vaga, status_entrevista=novo_status, obs_entrevista=obs)
-        st.success("Dados da entrevista atualizados.")
+        avisar("Dados da entrevista salvos.")
         st.rerun()
 
     st.markdown("##### Currículo")
@@ -1046,7 +1104,7 @@ def aba_entrevista(r):
         novo_cv = st.file_uploader("Anexar ou trocar currículo", type=["pdf", "doc", "docx"], key=f"up_cv_{r['id']}")
         if novo_cv is not None and st.button("Salvar currículo", key=f"salva_cv_{r['id']}"):
             atualizar(r["id"], curriculo=guardar_arquivo(f"{r['id']}_cv", novo_cv))
-            st.success("Currículo salvo.")
+            avisar("Currículo salvo.")
             st.rerun()
 
     avaliacao_candidato(r)
@@ -1070,7 +1128,7 @@ def avaliacao_candidato(r):
         if arq is not None:
             campos["avaliacao"] = guardar_arquivo(f"{r['id']}_avaliacao", arq)
         atualizar(r["id"], **campos)
-        st.success("Avaliação salva.")
+        avisar("Avaliação salva.")
         st.rerun()
     mostrar_arquivo(r["avaliacao"], "Avaliação completa", key=f"dl_av_{r['id']}")
     local = caminho_local(r["avaliacao"])
@@ -1131,6 +1189,7 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
                 "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
             atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
+            avisar("Documentação aprovada com CNPJ pendente.")
             st.rerun()
     else:
         if r["doc_status"] == DOC_APROVADA_PEND:
@@ -1138,12 +1197,14 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA and b1.button(
                 "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
             atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
+            avisar("Documentação aprovada.")
             st.rerun()
     if r["doc_status"] not in DOCS_LIBERADAS and b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
         if not obs.strip():
             st.error("Descreva o ajuste necessário.")
         else:
             atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
+            avisar("Ajuste solicitado ao candidato.", "📝")
             st.rerun()
 
 
@@ -1156,6 +1217,7 @@ def aba_contrato(r):
         else:
             atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
                       contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
+            avisar("Contrato salvo.")
             st.rerun()
     if r["contrato_data"]:
         st.caption(f"Assinatura registrada em {r['contrato_data']}.")
@@ -1167,6 +1229,7 @@ def aba_acessos(r):
     c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
         atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
+        avisar("Acessos salvos.")
         st.rerun()
 
 
@@ -1197,6 +1260,7 @@ def aba_integracao(r):
     if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
         atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
                   **{k: sn(v) for k, v in marcados.items()})
+        avisar("Integração salva.")
         st.rerun()
 
 
@@ -1215,7 +1279,7 @@ def aba_inicio(r):
         forcar = True
     if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary", disabled=not forcar):
         atualizar(r["id"], status_final=STATUS_ATIVO, operacao_iniciada_em=agora())
-        st.balloons()
+        avisar("Operação iniciada! Prestador ativo.", "🚀")
         st.rerun()
 
 
@@ -1274,7 +1338,7 @@ def comparativo():
         for antigo in existentes:
             antigo.unlink()
         (UPLOAD_DIR / (base + Path(novo.name).suffix.lower())).write_bytes(novo.getvalue())
-        st.success("Comparativo salvo.")
+        avisar("Comparativo salvo.")
         st.rerun()
 
 
@@ -1282,6 +1346,7 @@ def comparativo():
 # NAVEGAÇÃO
 # =============================================================================
 html(CSS)
+mostrar_aviso()
 with st.sidebar:
     st.markdown("### 🤝 Onboarding de Prestadores")
     tela = st.radio("Menu", ["Visão do Candidato / Formulário", "Painel de Controle / RH"], label_visibility="collapsed")
