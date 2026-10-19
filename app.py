@@ -37,6 +37,8 @@ st.set_page_config(page_title="Onboarding de Prestadores", page_icon="🤝", lay
 
 CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 STATUS_ENTREVISTA = ["Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
+UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
+       "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
 STATUS_ATIVO = "Ativo / Operação Iniciada"
 DOC_APROVADA = "Aprovada"
@@ -55,6 +57,7 @@ COLUNAS = [
     "avaliacao_nota", "avaliacao_resumo", "avaliacao",
     # Etapa 2
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
+    "cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
     "is_mei", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
     "cnpj_apto", "cartao_cnpj", "form_enviado_em",
@@ -308,6 +311,47 @@ def consultar_cnpj(cnpj):
         except Exception:
             continue
     return {"status": "nao_encontrado" if nao_encontrado else "indisponivel"}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def consultar_cep(cep):
+    """ViaCEP com reserva na BrasilAPI. Retorna dict com uf, cidade, bairro, logradouro ou None."""
+    c = so_digitos(cep)
+    if len(c) != 8:
+        return None
+    fontes = [
+        (f"https://viacep.com.br/ws/{c}/json/",
+         lambda d: None if d.get("erro") else {"uf": d.get("uf", ""), "cidade": d.get("localidade", ""),
+                                               "bairro": d.get("bairro", ""), "logradouro": d.get("logradouro", "")}),
+        (f"https://brasilapi.com.br/api/cep/v2/{c}",
+         lambda d: {"uf": d.get("state", ""), "cidade": d.get("city", ""),
+                    "bairro": d.get("neighborhood", ""), "logradouro": d.get("street", "")}),
+    ]
+    for url, parser in fontes:
+        try:
+            r = requests.get(url, timeout=10, headers={"User-Agent": "onboarding-prestadores/1.0"})
+            if r.status_code == 200:
+                dados = parser(r.json())
+                if dados and dados.get("cidade"):
+                    return dados
+        except Exception:
+            continue
+    return None
+
+
+def fmt_cep(c):
+    c = so_digitos(c)
+    return f"{c[:5]}-{c[5:]}" if len(c) == 8 else c
+
+
+def montar_endereco(d):
+    linha = ", ".join(x for x in [d["logradouro"], d["numero"]] if x)
+    if d["complemento"]:
+        linha += f" - {d['complemento']}"
+    partes = [linha, d["bairro"], "/".join(x for x in [d["cidade"], d["uf"]] if x)]
+    if d["cep"]:
+        partes.append(f"CEP {fmt_cep(d['cep'])}")
+    return " · ".join(x for x in partes if x)
 
 
 def avaliar_regras(is_mei, tem_cnae, situacao="ATIVA"):
@@ -572,6 +616,46 @@ def tela_candidato():
         formulario_candidato(r)
 
 
+def campos_endereco(r, k):
+    """Campos de endereço. Ao informar o CEP (Enter ou sair do campo), preenche estado, cidade, bairro e rua."""
+    campos = ["cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento"]
+    for c in campos:  # valores iniciais vêm do cadastro; depois o session_state manda
+        st.session_state.setdefault(k(c), fmt_cep(r[c]) if c == "cep" else r[c])
+    if st.session_state[k("uf")] not in UFS:
+        st.session_state[k("uf")] = ""
+
+    def ao_mudar_cep():
+        dados = consultar_cep(st.session_state[k("cep")])
+        st.session_state[k("cep_msg")] = "ok" if dados else "erro"
+        if dados:
+            st.session_state[k("cep")] = fmt_cep(st.session_state[k("cep")])
+            for c, v in dados.items():
+                if v:
+                    st.session_state[k(c)] = v if c != "uf" or v in UFS else ""
+
+    st.markdown("##### Endereço")
+    if r["endereco"] and not r["logradouro"]:
+        st.caption(f"Endereço informado antes: {r['endereco']}")
+    c1, c2, c3 = st.columns([1, 1, 2])
+    c1.text_input("CEP *", key=k("cep"), placeholder="00000-000", on_change=ao_mudar_cep,
+                  help="Digite o CEP e aperte Enter: estado, cidade, bairro e rua são preenchidos sozinhos.")
+    c2.selectbox("Estado *", UFS, key=k("uf"))
+    c3.text_input("Cidade *", key=k("cidade"))
+    msg = st.session_state.get(k("cep_msg"))
+    if msg == "ok":
+        c1.caption("✅ Endereço encontrado")
+    elif msg == "erro":
+        c1.caption("⚠️ CEP não encontrado. Preencha à mão.")
+    c1, c2 = st.columns([1, 2])
+    c1.text_input("Bairro *", key=k("bairro"))
+    c2.text_input("Endereço (rua, avenida...) *", key=k("logradouro"))
+    c1, c2 = st.columns([1, 2])
+    c1.text_input("Número *", key=k("numero"))
+    c2.text_input("Complemento", key=k("complemento"), placeholder="Apto, bloco, sala...")
+    return {c: st.session_state[k(c)].strip() if isinstance(st.session_state[k(c)], str) else st.session_state[k(c)]
+            for c in campos}
+
+
 def formulario_candidato(r, prefixo="cand"):
     """Formulário da Etapa 2. Usado pelo candidato e, no painel, pelo RH em nome dele."""
     pid = r["id"]
@@ -594,8 +678,7 @@ def formulario_candidato(r, prefixo="cand"):
     email = c2.text_input("E-mail *", r["email"], key=k("email"))
     ec_idx = ESTADOS_CIVIS.index(r["estado_civil"]) if r["estado_civil"] in ESTADOS_CIVIS else 0
     estado_civil = c1.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx, key=k("ec"))
-    endereco = st.text_area("Endereço completo (rua, nº, complemento, bairro, cidade/UF, CEP) *", r["endereco"],
-                            key=k("end"))
+    end = campos_endereco(r, k)
 
     st.markdown("##### Pessoa jurídica")
     possui = st.radio("Já possui CNPJ?", ["Sim", "Não"], horizontal=True,
@@ -672,8 +755,10 @@ def formulario_candidato(r, prefixo="cand"):
         rotulo = "Salvar Etapa 2"
     if st.button(rotulo, type="primary", key=k("enviar")):
         erros = []
-        if not all([nome_completo.strip(), rg.strip(), telefone.strip(), email.strip(), endereco.strip()]):
+        if not all([nome_completo.strip(), rg.strip(), telefone.strip(), email.strip()]):
             erros.append("Preencha todos os campos obrigatórios (*).")
+        if len(so_digitos(end["cep"])) != 8 or not all(end[x] for x in ("uf", "cidade", "bairro", "logradouro", "numero")):
+            erros.append("Preencha o endereço completo: CEP, estado, cidade, bairro, endereço e número.")
         if not cpf_valido(cpf):
             erros.append("CPF inválido.")
         if possui == "Sim" and not cnpj_info:
@@ -688,7 +773,7 @@ def formulario_candidato(r, prefixo="cand"):
         campos = dict(
             nome_completo=nome_completo.strip(), cpf=so_digitos(cpf), rg=rg.strip(),
             data_nascimento=nasc.isoformat(), telefone=telefone.strip(), email=email.strip().lower(),
-            estado_civil=estado_civil, endereco=endereco.strip(), form_enviado_em=agora(), **cnpj_info,
+            estado_civil=estado_civil, endereco=montar_endereco(end), form_enviado_em=agora(), **end, **cnpj_info,
         )
         if arquivo is not None:
             campos["cartao_cnpj"] = guardar_arquivo(pid, arquivo)
