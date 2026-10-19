@@ -907,7 +907,7 @@ def formulario_candidato(r, prefixo="cand"):
         if prefixo == "cand":
             st.session_state["_envio_cand"] = {"apto": apto, "possui": possui}
         else:
-            avisar("Etapa 2 salva.")
+            avisar("Etapa 2 salva." + ir_para_proxima(pid, 1, True))
         st.rerun()
 
 
@@ -1123,6 +1123,88 @@ def situacao_ficha(r):
     return txt + (" · falta: " + ", ".join(pend) if pend else " · pronto para iniciar")
 
 
+ABAS_FICHA = ["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
+              "5 · Acessos TI", "6 · Integração", "7 · Início"]
+# status: (ícone, cor da borda, cor de fundo, legenda)
+CORES_STATUS = {
+    "ok": ("✅", "#16A34A", "#ECFDF3", "Concluída"),
+    "andamento": ("🟡", "#D97706", "#FFFBEB", "Em andamento"),
+    "erro": ("🔴", "#DC2626", "#FEF2F2", "Reprovada / precisa de ajuste"),
+    "todo": ("⚪", "#D1D5DB", "#FFFFFF", "Não iniciada"),
+}
+
+
+def status_etapas(r):
+    """Status visual de cada etapa da ficha: ok | andamento | erro | todo."""
+    feitas = etapas_concluidas(r)
+    form = bool(r["form_enviado_em"])
+    st1 = {"Aprovado": "ok", "Reprovado": "erro"}.get(r["status_entrevista"], "andamento")
+    if feitas[2]:
+        st2 = "ok"
+    elif form and r["possui_cnpj"] == SIM and r["cnpj_apto"] != SIM:
+        st2 = "erro"  # CNPJ fora das regras (MEI, CNAE ou situação)
+    else:
+        st2 = "andamento" if form else "todo"
+    if r["doc_status"] == DOC_APROVADA:
+        st3 = "ok"
+    elif r["doc_status"] == "Reprovada":
+        st3 = "erro"
+    else:
+        st3 = "andamento" if form or r["doc_status"] == DOC_APROVADA_PEND else "todo"
+    st4 = "ok" if feitas[4] else ("andamento" if r["contrato_enviado"] == SIM else "todo")
+    ti = [r[k] == SIM for k in ("ti_email", "ti_looker", "ti_propostas")]
+    st5 = "ok" if all(ti) else ("andamento" if any(ti) else "todo")
+    onb = [r[k] == SIM for k in ("onb_material", "onb_metas", "onb_cultura")] + [bool(r["padrinho"])]
+    st6 = "ok" if all(onb) else ("andamento" if any(onb) else "todo")
+    if r["status_final"] == STATUS_ATIVO:
+        st7 = "ok"
+    else:
+        st7 = "andamento" if r["status_entrevista"] == "Aprovado" and all(feitas.values()) else "todo"
+    return [st1, st2, st3, st4, st5, st6, st7]
+
+
+def rotulos_abas(r):
+    return [f"{CORES_STATUS[s][0]} {nome}" for s, nome in zip(status_etapas(r), ABAS_FICHA)]
+
+
+def css_abas(r):
+    regras = []
+    for i, s in enumerate(status_etapas(r), start=1):
+        _, borda, fundo, _ = CORES_STATUS[s]
+        sel = f'.st-key-ficha_abas [data-testid="stTab"]:nth-of-type({i})'
+        regras.append(f"{sel} {{background: {fundo}; border-color: {borda}; box-shadow: inset 0 -3px 0 {borda};}}")
+        regras.append(f'{sel}[aria-selected="true"] {{background: #4F46E5; border-color: {borda}; '
+                      f"box-shadow: inset 0 -4px 0 {borda};}}")
+    legenda = " · ".join(f"{ic} {txt}" for ic, _, _, txt in CORES_STATUS.values())
+    return f"<style>{' '.join(regras)}</style>", legenda
+
+
+def ir_para_proxima(pid, atual, avancar=None):
+    """Depois de salvar, abre a próxima etapa pendente, ou volta ao quadro quando o candidato não está
+    aprovado, já está ativo ou não sobrou nada.
+
+    atual é o índice da aba (0 a 6). Por padrão só avança se a etapa atual ficou concluída;
+    avancar=True força o avanço, avancar=False mantém na mesma aba.
+    """
+    r = buscar(pid)
+    status = status_etapas(r)
+    if avancar is None:
+        avancar = status[atual] == "ok"
+    if not avancar:
+        st.session_state["ficha_ir"] = atual
+        return ""
+    if r["status_final"] == STATUS_ATIVO or r["status_entrevista"] != "Aprovado":
+        st.session_state.pop("ficha", None)
+        return " De volta ao quadro."
+    ordem = list(range(atual + 1, 6)) + list(range(1, atual))  # etapas 2 a 6, a partir da seguinte
+    for i in ordem:
+        if status[i] != "ok":
+            st.session_state["ficha_ir"] = i
+            return f" Próxima: {ABAS_FICHA[i]}."
+    st.session_state["ficha_ir"] = 6
+    return f" Tudo pronto: {ABAS_FICHA[6]}."
+
+
 def ficha_prestador(r):
     if st.button("← Voltar ao quadro"):
         st.session_state.pop("ficha", None)
@@ -1132,8 +1214,20 @@ def ficha_prestador(r):
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
          f'<p><b>{situacao_ficha(r)}</b></p></div>')
 
-    abas = st.tabs(["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
-                    "5 · Acessos TI", "6 · Integração", "7 · Início"])
+    rotulos = rotulos_abas(r)
+    # A aba aberta é guardada pelo número da etapa, porque o ícone do rótulo muda quando o status muda.
+    if st.session_state.get("ficha_abas_de") != r["id"]:  # ficha recém-aberta: começa na primeira etapa pendente
+        idx = next((i for i, s in enumerate(status_etapas(r)) if s != "ok"), 6)
+    else:
+        atual = st.session_state.get("ficha_abas") or rotulos[0]
+        idx = next((i for i, nome in enumerate(ABAS_FICHA) if atual.endswith(nome)), 0)
+    idx = st.session_state.pop("ficha_ir", idx)
+    st.session_state["ficha_abas_de"] = r["id"]
+    st.session_state["ficha_abas"] = rotulos[idx]
+    estilo, legenda = css_abas(r)
+    html(estilo)
+    st.caption(legenda)
+    abas = st.tabs(rotulos, key="ficha_abas", on_change="rerun")
     with abas[0]:
         aba_entrevista(r)
     with abas[1]:
@@ -1161,7 +1255,7 @@ def aba_entrevista(r):
     obs = c2.text_input("Observações da entrevista", r["obs_entrevista"], key=f"obs_{r['id']}")
     if st.button("Salvar", key=f"salva_st_{r['id']}", type="primary"):
         atualizar(r["id"], vaga=nova_vaga, status_entrevista=novo_status, obs_entrevista=obs)
-        avisar("Dados da entrevista salvos.")
+        avisar("Dados da entrevista salvos." + ir_para_proxima(r["id"], 0, True))
         st.rerun()
 
     st.markdown("##### Currículo")
@@ -1172,7 +1266,7 @@ def aba_entrevista(r):
         novo_cv = st.file_uploader("Anexar ou trocar currículo", type=["pdf", "doc", "docx"], key=f"up_cv_{r['id']}")
         if novo_cv is not None and st.button("Salvar currículo", key=f"salva_cv_{r['id']}"):
             atualizar(r["id"], curriculo=guardar_arquivo(f"{r['id']}_cv", novo_cv))
-            avisar("Currículo salvo.")
+            avisar("Currículo salvo." + ir_para_proxima(r["id"], 0, False))
             st.rerun()
 
     avaliacao_candidato(r)
@@ -1196,7 +1290,7 @@ def avaliacao_candidato(r):
         if arq is not None:
             campos["avaliacao"] = guardar_arquivo(f"{r['id']}_avaliacao", arq)
         atualizar(r["id"], **campos)
-        avisar("Avaliação salva.")
+        avisar("Avaliação salva." + ir_para_proxima(r["id"], 0, False))
         st.rerun()
     mostrar_arquivo(r["avaliacao"], "Avaliação completa", key=f"dl_av_{r['id']}")
     local = caminho_local(r["avaliacao"])
@@ -1212,7 +1306,7 @@ def aba_formalizacao(r):
         situ = "✅ CNPJ regular" if not cnpj_pendente(r) else (
             "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else
             "🔎 CNPJ declarado, conferir na Etapa 3" if cnpj_declarado(r) else "⚠️ CNPJ fora das regras")
-        st.success(f"Formulário enviado em {data_br(r['form_enviado_em'])} · {situ}")
+        (st.warning if cnpj_pendente(r) else st.success)(f"Formulário enviado em {data_br(r['form_enviado_em'])} · {situ}")
     else:
         st.warning("O candidato ainda não preencheu o formulário.")
 
@@ -1245,7 +1339,7 @@ def validacao_manual_cnpj(r):
                      disabled=not (ativa and nao_mei and cnae)):
             atualizar(r["id"], is_mei=r["is_mei"] if aceita_mei(r["vaga"]) else "Não", tem_cnae=SIM, situacao_cnpj="ATIVA", cnpj_apto=SIM,
                       fonte_validacao=f"Conferido pelo RH no cartão CNPJ em {data_br(agora())}")
-            avisar("CNPJ validado pelo RH.")
+            avisar("CNPJ validado pelo RH." + ir_para_proxima(r["id"], 2, False))
             st.rerun()
 
 
@@ -1288,7 +1382,7 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
                 "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
             atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
-            avisar("Documentação aprovada com CNPJ pendente.")
+            avisar("Documentação aprovada com CNPJ pendente." + ir_para_proxima(r["id"], 2, True))
             st.rerun()
     else:
         if r["doc_status"] == DOC_APROVADA_PEND:
@@ -1296,14 +1390,14 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA and b1.button(
                 "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
             atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
-            avisar("Documentação aprovada.")
+            avisar("Documentação aprovada." + ir_para_proxima(r["id"], 2, True))
             st.rerun()
     if r["doc_status"] not in DOCS_LIBERADAS and b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
         if not obs.strip():
             st.error("Descreva o ajuste necessário.")
         else:
             atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
-            avisar("Ajuste solicitado ao candidato.", "📝")
+            avisar("Ajuste solicitado ao candidato." + ir_para_proxima(r["id"], 2, True), "📝")
             st.rerun()
 
 
@@ -1316,7 +1410,7 @@ def aba_contrato(r):
         else:
             atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
                       contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
-            avisar("Contrato salvo.")
+            avisar("Contrato salvo." + ir_para_proxima(r["id"], 3, True))
             st.rerun()
     if r["contrato_data"]:
         st.caption(f"Assinatura registrada em {r['contrato_data']}.")
@@ -1328,7 +1422,7 @@ def aba_acessos(r):
     c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
         atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
-        avisar("Acessos salvos.")
+        avisar("Acessos salvos." + ir_para_proxima(r["id"], 4, True))
         st.rerun()
 
 
@@ -1359,7 +1453,7 @@ def aba_integracao(r):
     if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
         atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
                   **{k: sn(v) for k, v in marcados.items()})
-        avisar("Integração salva.")
+        avisar("Integração salva." + ir_para_proxima(r["id"], 5, True))
         st.rerun()
 
 
@@ -1378,7 +1472,7 @@ def aba_inicio(r):
         forcar = True
     if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary", disabled=not forcar):
         atualizar(r["id"], status_final=STATUS_ATIVO, operacao_iniciada_em=agora())
-        avisar("Operação iniciada! Prestador ativo.", "🚀")
+        avisar("Operação iniciada! Prestador ativo." + ir_para_proxima(r["id"], 6, True), "🚀")
         st.rerun()
 
 
