@@ -397,29 +397,125 @@ def rotulo_etapa(r):
     return "Onboarding · falta: " + ", ".join(pend)
 
 
-def barra_progresso(r):
-    if fase(r) == 8:
-        st.progress(1.0, text=f"**{STATUS_ATIVO}**")
-        return
+
+
+# =============================================================================
+# VISUAL (CSS, chips, progresso)
+# =============================================================================
+CSS = """
+<style>
+.block-container {padding-top: 3.2rem; max-width: 1600px;}
+.stTabs [role="tablist"] {gap: 6px; flex-wrap: wrap; border-bottom: none;}
+.stTabs [data-testid="stTab"] {background: #fff; border: 1px solid #E5E7EB; border-radius: 10px;
+                            padding: 6px 14px; height: auto; margin: 0;}
+.stTabs [data-testid="stTab"][aria-selected="true"] {background: #4F46E5; border-color: #4F46E5;}
+.stTabs [data-testid="stTab"][aria-selected="true"] p {color: #fff;}
+.stTabs .react-aria-SelectionIndicator {display: none;}
+h1, h2, h3 {letter-spacing: -0.01em;}
+.hero {background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: #fff;
+       padding: 20px 26px; border-radius: 16px; margin-bottom: 18px;}
+.hero h2 {color: #fff; margin: 0; font-size: 1.55rem; font-weight: 700; padding: 0;}
+.hero p {margin: 6px 0 0; opacity: .92; font-size: .92rem;}
+.hero code {background: rgba(255,255,255,.18); color: #fff; padding: 1px 8px; border-radius: 6px;}
+.kpis {display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px;}
+.kpi {background: #fff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 12px 16px;}
+.kpi b {font-size: 1.6rem; display: block; line-height: 1.2; color: #111827;}
+.kpi span {color: #6B7280; font-size: .8rem;}
+.kb-head {display: flex; justify-content: space-between; align-items: center; padding: 8px 12px;
+          border-radius: 10px; font-weight: 600; font-size: .86rem; color: #fff; margin-bottom: 6px;}
+.kb-count {background: rgba(255,255,255,.28); border-radius: 999px; padding: 0 9px; font-size: .78rem;}
+.kb-vazio {color: #9CA3AF; font-size: .8rem; text-align: center; padding: 14px 0;}
+.card-nome {font-weight: 650; font-size: .93rem; color: #111827; margin-bottom: 1px;}
+.card-sub {color: #6B7280; font-size: .76rem; margin-bottom: 6px;}
+.chip {display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .69rem;
+       font-weight: 600; margin: 0 4px 4px 0; white-space: nowrap;}
+.chip-ok {background: #DCFCE7; color: #166534;}
+.chip-pend {background: #F3F4F6; color: #4B5563;}
+.chip-warn {background: #FEF3C7; color: #92400E;}
+.chip-bad {background: #FEE2E2; color: #991B1B;}
+.chip-info {background: #E0E7FF; color: #3730A3;}
+.dots {display: flex; gap: 3px; margin: 4px 0 2px;}
+.dots span {flex: 1; height: 5px; border-radius: 3px; background: #E5E7EB;}
+.dots span.on {background: #22C55E;}
+.passos {display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px;}
+.passo {padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
+        background: #F3F4F6; color: #4B5563; border: 1px solid #E5E7EB;}
+.passo.ok {background: #DCFCE7; color: #166534; border-color: #BBF7D0;}
+.campos {display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: .9rem; margin-bottom: 8px;}
+.campos .k {color: #6B7280;}
+.campos .v {color: #111827; word-break: break-word;}
+</style>
+"""
+
+KANBAN = [
+    ("entrevista", "🗣️ Entrevista", "#6366F1"),
+    (2, "📝 Formalização", "#0EA5E9"),
+    (3, "📂 Documentos", "#14B8A6"),
+    (4, "✍️ Contrato", "#F59E0B"),
+    (5, "💻 Acessos TI", "#8B5CF6"),
+    (6, "🤝 Integração", "#EC4899"),
+    (7, "🚀 Início / Ativos", "#22C55E"),
+]
+
+
+def html(txt):
+    st.markdown(txt, unsafe_allow_html=True)
+
+
+def esc(txt):
+    return (str(txt or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def chip(txt, tipo="pend"):
+    return f'<span class="chip chip-{tipo}">{esc(txt)}</span>'
+
+
+def coluna_kanban(r):
+    """O card fica na primeira etapa ainda pendente; as demais aparecem nos indicadores."""
+    if r["status_final"] == STATUS_ATIVO:
+        return 7
+    if r["status_entrevista"] != "Aprovado":
+        return "entrevista"
+    for k, ok in etapas_concluidas(r).items():
+        if not ok:
+            return k
+    return 7
+
+
+def passos_html(r):
     feitas = etapas_concluidas(r)
-    n = sum(feitas.values())
-    marcas = " · ".join(f"{'✅' if ok else '⬜'} {NOMES_CURTOS[k]}" for k, ok in feitas.items())
-    st.progress(n / len(feitas), text=f"**{n} de {len(feitas)} etapas concluídas**  ·  {marcas}")
+    itens = [f'<span class="passo ok">1 · Entrevista ✓</span>' if r["status_entrevista"] == "Aprovado"
+             else f'<span class="passo">1 · Entrevista ({esc(r["status_entrevista"])})</span>']
+    for k, ok in feitas.items():
+        itens.append(f'<span class="passo{" ok" if ok else ""}">{k} · {NOMES_CURTOS[k]}{" ✓" if ok else ""}</span>')
+    ativo = r["status_final"] == STATUS_ATIVO
+    itens.append(f'<span class="passo{" ok" if ativo else ""}">7 · Início{" ✓" if ativo else ""}</span>')
+    return '<div class="passos">' + "".join(itens) + "</div>"
+
+
+def campos_html(d):
+    linhas = "".join(f'<div class="k">{esc(k)}</div><div class="v">{esc(v) or "—"}</div>' for k, v in d.items())
+    return f'<div class="campos">{linhas}</div>'
+
+
+def barra_progresso(r):
+    """Versão para o candidato."""
+    html(passos_html(r))
 
 
 # =============================================================================
 # VISÃO DO CANDIDATO
 # =============================================================================
 def tela_candidato():
-    st.title("🤝 Formulário do Prestador")
-
     pid = st.session_state.get("cand_id")
     if not pid:
-        st.write("Informe o **código de acesso** que você recebeu do RH e o seu e-mail.")
-        with st.form("login_cand"):
+        html('<div class="hero"><h2>🤝 Bem-vindo ao onboarding</h2>'
+             '<p>Informe o código de acesso que você recebeu do RH e o seu e-mail.</p></div>')
+        _, meio, _ = st.columns([1, 2, 1])
+        with meio, st.form("login_cand"):
             codigo = st.text_input("Código de acesso").strip().upper()
             email = st.text_input("E-mail").strip().lower()
-            if st.form_submit_button("Acessar", type="primary"):
+            if st.form_submit_button("Acessar", type="primary", width="stretch"):
                 df = carregar()
                 achou = df[(df["codigo_acesso"] == codigo) & (df["email"] == email)]
                 if achou.empty:
@@ -434,9 +530,11 @@ def tela_candidato():
         st.session_state.pop("cand_id", None)
         st.rerun()
 
-    topo1, topo2 = st.columns([4, 1])
-    topo1.subheader(f"Olá, {r['nome'].split(' ')[0]}!")
-    if topo2.button("Sair"):
+    topo1, topo2 = st.columns([5, 1])
+    with topo1:
+        html(f'<div class="hero"><h2>Olá, {esc(r["nome"].split(" ")[0])}!</h2>'
+             f'<p>{esc(r["vaga"])} · acompanhe aqui o seu onboarding.</p></div>')
+    if topo2.button("Sair", width="stretch"):
         st.session_state.pop("cand_id", None)
         st.rerun()
     barra_progresso(r)
@@ -460,39 +558,48 @@ def tela_candidato():
         if r["padrinho"]:
             st.write(f"**Seu padrinho no primeiro mês:** {r['padrinho']}")
         with st.expander("Ver dados enviados"):
-            st.write({k: r[k] for k in ("nome_completo", "cpf", "email", "telefone", "cnpj", "razao_social")})
+            html(campos_html({"Nome": r["nome_completo"], "CPF": r["cpf"], "E-mail": r["email"],
+                              "Telefone": r["telefone"], "CNPJ": fmt_cnpj(r["cnpj"]),
+                              "Razão social": r["razao_social"]}))
         return
 
     if r["doc_status"] == "Reprovada":
         st.error(f"O RH pediu ajustes na sua documentação: {r['doc_obs'] or 'veja com o RH.'}")
     elif r["form_enviado_em"]:
-        st.warning("Recebemos seus dados pessoais. Falta regularizar o CNPJ para seguir. Atualize abaixo quando estiver pronto.")
+        st.warning("Recebemos seus dados pessoais. Falta regularizar o CNPJ. Atualize abaixo quando estiver pronto.")
 
-    formulario_candidato(r)
+    with st.container(border=True):
+        formulario_candidato(r)
 
 
-def formulario_candidato(r):
+def formulario_candidato(r, prefixo="cand"):
+    """Formulário da Etapa 2. Usado pelo candidato e, no painel, pelo RH em nome dele."""
     pid = r["id"]
-    st.markdown("### Etapa 2 · Dados pessoais")
+
+    def k(nome):
+        return f"{prefixo}_{nome}_{pid}"
+
+    st.markdown("##### Dados pessoais")
     c1, c2 = st.columns(2)
-    nome_completo = c1.text_input("Nome completo *", r["nome_completo"] or r["nome"])
-    cpf = c2.text_input("CPF *", r["cpf"], placeholder="000.000.000-00")
-    rg = c1.text_input("RG *", r["rg"])
+    nome_completo = c1.text_input("Nome completo *", r["nome_completo"] or r["nome"], key=k("nome"))
+    cpf = c2.text_input("CPF *", r["cpf"], placeholder="000.000.000-00", key=k("cpf"))
+    rg = c1.text_input("RG *", r["rg"], key=k("rg"))
     try:
         dn_padrao = date.fromisoformat(r["data_nascimento"]) if r["data_nascimento"] else date(1990, 1, 1)
     except ValueError:
         dn_padrao = date(1990, 1, 1)
     nasc = c2.date_input("Data de nascimento *", dn_padrao, min_value=date(1940, 1, 1),
-                         max_value=date.today(), format="DD/MM/YYYY")
-    telefone = c1.text_input("Telefone *", r["telefone"])
-    email = c2.text_input("E-mail *", r["email"])
+                         max_value=date.today(), format="DD/MM/YYYY", key=k("nasc"))
+    telefone = c1.text_input("Telefone *", r["telefone"], key=k("tel"))
+    email = c2.text_input("E-mail *", r["email"], key=k("email"))
     ec_idx = ESTADOS_CIVIS.index(r["estado_civil"]) if r["estado_civil"] in ESTADOS_CIVIS else 0
-    estado_civil = c1.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx)
-    endereco = st.text_area("Endereço completo (rua, nº, complemento, bairro, cidade/UF, CEP) *", r["endereco"])
+    estado_civil = c1.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx, key=k("ec"))
+    endereco = st.text_area("Endereço completo (rua, nº, complemento, bairro, cidade/UF, CEP) *", r["endereco"],
+                            key=k("end"))
 
-    st.markdown("### Etapa 2 · Pessoa jurídica")
-    possui = st.radio("Você já possui CNPJ?", ["Sim", "Não"], horizontal=True,
-                      index=0 if r["possui_cnpj"] != "Não" else 1)
+    st.markdown("##### Pessoa jurídica")
+    possui = st.radio("Já possui CNPJ?", ["Sim", "Não"], horizontal=True,
+                      index=0 if r["possui_cnpj"] != "Não" else 1, key=k("possui"))
 
     cnpj_info = {}
     arquivo = None
@@ -502,9 +609,9 @@ def formulario_candidato(r):
         st.info(ORIENTACOES_SEM_CNPJ)
         cnpj_info = {"possui_cnpj": "Não", "cnpj_apto": ""}
     else:
-        cnpj = st.text_input("CNPJ *", fmt_cnpj(r["cnpj"]), placeholder="00.000.000/0000-00")
+        cnpj = st.text_input("CNPJ *", fmt_cnpj(r["cnpj"]), placeholder="00.000.000/0000-00", key=k("cnpj"))
         chave = f"cnpj_res_{pid}"
-        if st.button("🔎 Validar CNPJ"):
+        if st.button("🔎 Validar CNPJ", key=k("validar")):
             if not cnpj_valido(cnpj):
                 st.session_state[chave] = {"status": "invalido"}
             else:
@@ -532,21 +639,22 @@ def formulario_candidato(r):
                 col_b.metric(f"CNAE {fmt_cnae(CNAE_EXIGIDO)}?", "Sim ✅" if tem_cnae else "Não ❌")
             else:  # indisponivel -> declaração manual
                 st.warning("Não conseguimos consultar a Receita agora. Responda abaixo; o RH vai conferir no cartão CNPJ.")
-                is_mei = st.radio("Sua empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1) == "Sim"
-                tem_cnae = st.radio(f"Seu CNPJ possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)?",
-                                    ["Sim", "Não"], horizontal=True) == "Sim"
+                is_mei = st.radio("A empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1, key=k("mei")) == "Sim"
+                tem_cnae = st.radio(f"O CNPJ possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)?",
+                                    ["Sim", "Não"], horizontal=True, key=k("cnae")) == "Sim"
                 situacao, fonte = "", "Declaração do candidato (API indisponível)"
                 res = {**res, "razao_social": "", "natureza_juridica": "", "cnae_principal": "", "cnaes_secundarios": []}
 
-            apto, pendencias = avaliar_regras(is_mei, tem_cnae, situacao)
+            apto, pend = avaliar_regras(is_mei, tem_cnae, situacao)
             if apto:
-                st.success("Seu CNPJ atende aos requisitos. Anexe o Cartão CNPJ para concluir.")
-                arquivo = st.file_uploader("Cartão CNPJ (PDF ou imagem) *", type=["pdf", "png", "jpg", "jpeg"])
+                st.success("O CNPJ atende aos requisitos. Anexe o Cartão CNPJ para concluir.")
+                arquivo = st.file_uploader("Cartão CNPJ (PDF ou imagem) *", type=["pdf", "png", "jpg", "jpeg"],
+                                           key=k("cartao"))
             else:
-                st.error("Seu CNPJ precisa de regularização antes de seguir:")
-                for p in pendencias:
+                st.error("O CNPJ precisa de regularização antes de seguir:")
+                for p in pend:
                     st.markdown(f"- {p}")
-                st.caption("Você pode enviar seus dados pessoais agora e voltar com o CNPJ regularizado.")
+                st.caption("Dá para enviar os dados pessoais agora e voltar com o CNPJ regularizado.")
 
             cnpj_info = {
                 "possui_cnpj": "Sim", "cnpj": so_digitos(cnpj),
@@ -560,7 +668,9 @@ def formulario_candidato(r):
 
     st.divider()
     rotulo = "Enviar dados e documentos" if apto else "Enviar dados pessoais"
-    if st.button(rotulo, type="primary"):
+    if prefixo != "cand":
+        rotulo = "Salvar Etapa 2"
+    if st.button(rotulo, type="primary", key=k("enviar")):
         erros = []
         if not all([nome_completo.strip(), rg.strip(), telefone.strip(), email.strip(), endereco.strip()]):
             erros.append("Preencha todos os campos obrigatórios (*).")
@@ -585,7 +695,7 @@ def formulario_candidato(r):
         if apto and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
-        st.success("Dados enviados com sucesso!")
+        st.success("Dados salvos com sucesso!")
         st.rerun()
 
 
@@ -596,78 +706,132 @@ def login_rh():
     if st.session_state.get("rh_ok"):
         return True
     senha_cfg = secret("rh_password", "rh123")
-    st.title("🔒 Painel de Controle · RH")
-    if senha_cfg == "rh123":
-        st.caption("Senha de demonstração: **rh123** (defina `rh_password` em secrets para trocar).")
-    with st.form("login_rh"):
-        senha = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar", type="primary"):
-            if senha == senha_cfg:
-                st.session_state["rh_ok"] = True
-                st.rerun()
-            st.error("Senha incorreta.")
+    html('<div class="hero"><h2>🔒 Painel de Controle · RH</h2><p>Acesso restrito à equipe de RH.</p></div>')
+    _, meio, _ = st.columns([1, 2, 1])
+    with meio:
+        if senha_cfg == "rh123":
+            st.caption("Senha de demonstração: **rh123** (defina `rh_password` em secrets para trocar).")
+        with st.form("login_rh"):
+            senha = st.text_input("Senha", type="password")
+            if st.form_submit_button("Entrar", type="primary", width="stretch"):
+                if senha == senha_cfg:
+                    st.session_state["rh_ok"] = True
+                    st.rerun()
+                st.error("Senha incorreta.")
     return False
 
 
 def tela_rh():
     if not login_rh():
         return
-    st.title("📋 Painel de Controle · RH")
-    aba_geral, aba_entrevistas, aba_comp, aba_prestador = st.tabs(
-        ["📊 Visão geral", "🗣️ Etapa 1 · Entrevistas", "📈 Comparativo", "🧾 Etapas 3 a 7 · Prestador"]
-    )
-    with aba_geral:
-        visao_geral()
-    with aba_entrevistas:
-        etapa_entrevistas()
+    pid = st.session_state.get("ficha")
+    if pid and buscar(pid):
+        ficha_prestador(buscar(pid))
+        return
+    st.session_state.pop("ficha", None)
+
+    html('<div class="hero"><h2>📋 Painel de Controle · RH</h2>'
+         '<p>Acompanhe cada prestador da entrevista ao início das operações.</p></div>')
+    aba_quadro, aba_novo, aba_comp, aba_base = st.tabs(
+        ["🗂️ Quadro", "➕ Novo candidato", "📈 Comparativo", "📋 Base completa"])
+    with aba_quadro:
+        quadro_kanban()
+    with aba_novo:
+        novo_candidato()
     with aba_comp:
         comparativo()
-    with aba_prestador:
-        gestao_prestador()
+    with aba_base:
+        base_completa()
 
 
-def visao_geral():
+def kpis(df):
+    ativos = int((df["status_final"] == STATUS_ATIVO).sum()) if not df.empty else 0
+    em_ent = int((df["status_entrevista"] == "Em Entrevista").sum()) if not df.empty else 0
+    onb = int(df.apply(lambda r: fase(r) == 2, axis=1).sum()) if not df.empty else 0
+    pend_cnpj = int(df.apply(lambda r: fase(r) == 2 and bool(r["form_enviado_em"]) and cnpj_pendente(r),
+                                  axis=1).sum()) if not df.empty else 0
+    itens = [("Candidatos", len(df)), ("Em entrevista", em_ent), ("Em onboarding", onb),
+             ("CNPJ pendente", pend_cnpj), ("Ativos", ativos)]
+    html('<div class="kpis">' + "".join(f'<div class="kpi"><b>{v}</b><span>{t}</span></div>' for t, v in itens)
+         + "</div>")
+
+
+def card_prestador(r):
+    feitas = etapas_concluidas(r)
+    chips = [chip(r["vaga"], "info")]
+    if r["status_entrevista"] != "Aprovado":
+        tipo = {"Reprovado": "bad", "Banco de Espera": "warn"}.get(r["status_entrevista"], "pend")
+        chips.append(chip(r["status_entrevista"], tipo))
+    if r["avaliacao_nota"]:
+        chips.append(chip(f"Nota {r['avaliacao_nota']}", "info"))
+    if fase(r) == 2 and r["form_enviado_em"] and cnpj_pendente(r):
+        chips.append(chip("CNPJ pendente", "warn"))
+    if r["doc_status"] == "Reprovada":
+        chips.append(chip("Docs reprovados", "bad"))
+    if r["status_final"] == STATUS_ATIVO:
+        chips.append(chip("Ativo", "ok"))
+    elif fase(r) == 2 and not pendencias(r):
+        chips.append(chip("Pronto para iniciar", "ok"))
+    dots = ""
+    if fase(r) != 1:
+        dots = '<div class="dots">' + "".join(
+            f'<span class="{"on" if ok else ""}" title="{NOMES_CURTOS[k]}"></span>' for k, ok in feitas.items()) + "</div>"
+    with st.container(border=True):
+        html(f'<div class="card-nome">{esc(r["nome"])}</div>'
+             f'<div class="card-sub">Código {esc(r["codigo_acesso"])}</div>{"".join(chips)}{dots}')
+        if st.button("Abrir ficha", key=f"abrir_{r['id']}", width="stretch"):
+            st.session_state["ficha"] = r["id"]
+            st.rerun()
+
+
+def quadro_kanban():
     df = carregar()
+    kpis(df)
     if df.empty:
-        st.info("Nenhum candidato cadastrado ainda. Comece pela aba **Etapa 1 · Entrevistas**.")
+        st.info("Nenhum candidato ainda. Cadastre o primeiro na aba **➕ Novo candidato**.")
         return
-    df["etapa"] = df.apply(rotulo_etapa, axis=1)
-    df["n_etapa"] = df.apply(fase, axis=1)
-    df["situacao_cnpj_pj"] = df.apply(
-        lambda r: "" if not r["form_enviado_em"] else ("Regular" if r["cnpj_apto"] == SIM else "Pendente"), axis=1)
-    cols = st.columns(5)
-    cols[0].metric("Candidatos", len(df))
-    cols[1].metric("Em entrevista", int((df["status_entrevista"] == "Em Entrevista").sum()))
-    cols[2].metric("Em onboarding", int((df["n_etapa"] == 2).sum()))
-    cols[3].metric("CNPJ pendente", int(((df["situacao_cnpj_pj"] == "Pendente") & (df["n_etapa"] < 8)).sum()))
-    cols[4].metric("Ativos", int((df["status_final"] == STATUS_ATIVO).sum()))
+    f1, f2, f3 = st.columns([2, 2, 1.4])
+    busca = f1.text_input("Buscar por nome ou código", key="kb_busca", placeholder="Digite para filtrar")
+    vagas = ["Todas as vagas"] + sorted(v for v in df["vaga"].unique() if v)
+    vaga = f2.selectbox("Vaga", vagas, key="kb_vaga")
+    f3.write("")
+    mostrar_fora = f3.toggle("Banco de espera e reprovados", key="kb_fora")
 
-    df["pendentes"] = df.apply(lambda r: pendencias(r) if fase(r) == 2 else [], axis=1)
-    filtro = st.multiselect("Filtrar prestadores com pendência em", list(NOMES_CURTOS.values()))
-    vis = df[df["pendentes"].apply(lambda p: all(f in p for f in filtro))] if filtro else df
-    st.dataframe(
-        vis[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "etapa", "situacao_cnpj_pj", "padrinho",
-             "atualizado_em"]]
-        .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail", "telefone": "Telefone",
-                         "status_entrevista": "Entrevista", "etapa": "Situação", "situacao_cnpj_pj": "CNPJ",
-                         "padrinho": "Padrinho", "atualizado_em": "Atualizado em"}),
-        hide_index=True, width="stretch",
-    )
-    st.download_button("⬇️ Exportar base completa (CSV)", df[COLUNAS].to_csv(index=False).encode("utf-8-sig"),
-                       "prestadores.csv", "text/csv")
+    if busca:
+        b = busca.strip().lower()
+        df = df[df["nome"].str.lower().str.contains(b, regex=False) | df["codigo_acesso"].str.lower().str.contains(b)]
+    if vaga != "Todas as vagas":
+        df = df[df["vaga"] == vaga]
+    if not mostrar_fora:
+        df = df[~df["status_entrevista"].isin(["Banco de Espera", "Reprovado"])]
+
+    df = df.assign(_col=df.apply(coluna_kanban, axis=1) if not df.empty else [])
+    st.caption("Cada card fica na primeira etapa pendente. As barrinhas mostram as etapas 2 a 6: "
+               "verde é concluída. As etapas podem ser feitas em qualquer ordem dentro da ficha.")
+    colunas = st.columns(len(KANBAN), gap="small")
+    for (chave, titulo, cor), col in zip(KANBAN, colunas):
+        itens = df[df["_col"] == chave] if not df.empty else df
+        with col:
+            html(f'<div class="kb-head" style="background:{cor}"><span>{titulo}</span>'
+                 f'<span class="kb-count">{len(itens)}</span></div>')
+            if itens.empty:
+                html('<div class="kb-vazio">Nenhum</div>')
+            for _, r in itens.sort_values("atualizado_em", ascending=False).iterrows():
+                card_prestador(r.to_dict())
 
 
-def etapa_entrevistas():
-    st.markdown("#### Cadastrar candidato")
-    with st.form("novo_cand", clear_on_submit=True):
+def novo_candidato():
+    _, meio, _ = st.columns([1, 3, 1])
+    with meio, st.form("novo_cand", clear_on_submit=True):
+        st.markdown("##### Cadastrar candidato")
         c1, c2 = st.columns(2)
         nome = c1.text_input("Nome *")
         email = c2.text_input("E-mail *")
         tel = c1.text_input("Telefone *")
         vaga = c2.text_input("Vaga / Cargo *")
-        status = st.selectbox("Status", STATUS_ENTREVISTA)
+        status = st.selectbox("Status da entrevista", STATUS_ENTREVISTA)
         cv = st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"])
-        if st.form_submit_button("Cadastrar", type="primary"):
+        if st.form_submit_button("Cadastrar", type="primary", width="stretch"):
             if not all([nome.strip(), email.strip(), tel.strip(), vaga.strip()]):
                 st.error("Preencha todos os campos.")
             elif "@" not in email:
@@ -680,27 +844,112 @@ def etapa_entrevistas():
                     atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
                 st.success(f"{novo['nome']} cadastrado. Código de acesso: **{novo['codigo_acesso']}**")
 
+
+def base_completa():
     df = carregar()
     if df.empty:
+        st.info("Nenhum candidato cadastrado ainda.")
         return
-    st.markdown("#### Atualizar status da entrevista")
-    nomes = {r["id"]: f"{r['nome']} · {r['vaga']} ({r['status_entrevista']})" for _, r in df.iterrows()}
-    r = buscar(st.selectbox("Candidato", list(nomes), format_func=nomes.get, key="sel_entrevista"))
+    df["situacao"] = df.apply(rotulo_etapa, axis=1)
+    df["cnpj_sit"] = df.apply(
+        lambda r: "" if not r["form_enviado_em"] else ("Regular" if r["cnpj_apto"] == SIM else "Pendente"), axis=1)
+    st.dataframe(
+        df[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "avaliacao_nota",
+            "situacao", "cnpj_sit", "padrinho", "atualizado_em"]]
+        .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail",
+                         "telefone": "Telefone", "status_entrevista": "Entrevista", "avaliacao_nota": "Nota",
+                         "situacao": "Situação", "cnpj_sit": "CNPJ", "padrinho": "Padrinho",
+                         "atualizado_em": "Atualizado em"}),
+        hide_index=True, width="stretch",
+    )
+    st.download_button("⬇️ Exportar base completa (CSV)", df[COLUNAS].to_csv(index=False).encode("utf-8-sig"),
+                       "prestadores.csv", "text/csv")
+
+
+def caminho_local(valor):
+    return UPLOAD_DIR / valor[6:] if valor.startswith("local:") else None
+
+
+def mostrar_arquivo(valor, rotulo, key):
+    if not valor:
+        st.caption(f"{rotulo}: não anexado")
+    elif valor.startswith("local:"):
+        caminho = UPLOAD_DIR / valor[6:]
+        if caminho.exists():
+            st.download_button(f"📎 Baixar {rotulo}", caminho.read_bytes(), caminho.name, key=key)
+        else:
+            st.warning(f"{rotulo}: arquivo não encontrado (o servidor pode ter sido reiniciado). Anexe de novo.")
+    else:
+        st.link_button(f"📎 Abrir {rotulo} no Drive", valor)
+
+
+def ck(r, campo, rotulo, key):
+    return st.checkbox(rotulo, value=r[campo] == SIM, key=f"{key}_{r['id']}")
+
+
+def sn(v):
+    return SIM if v else ""
+
+
+def mensagem_acesso(r):
+    return (f"Olá, {r['nome'].split(' ')[0]}! Para seguir com o seu onboarding, acesse o link do sistema, "
+            f"escolha \"Visão do Candidato\" e entre com:\n"
+            f"Código de acesso: {r['codigo_acesso']}\nE-mail: {r['email']}")
+
+
+# ---------------------------------------------------------------------------
+# Ficha do prestador: uma aba por etapa
+# ---------------------------------------------------------------------------
+def situacao_ficha(r):
+    if r["status_final"] == STATUS_ATIVO:
+        return f"✅ {STATUS_ATIVO} desde {r['operacao_iniciada_em']}"
+    if r["status_entrevista"] != "Aprovado":
+        return f"Entrevista: {r['status_entrevista']}"
+    feitas = etapas_concluidas(r)
+    pend = [NOMES_CURTOS[k] for k, ok in feitas.items() if not ok]
+    txt = f"{sum(feitas.values())} de {len(feitas)} etapas de onboarding concluídas"
+    return txt + (" · falta: " + ", ".join(pend) if pend else " · pronto para iniciar")
+
+
+def ficha_prestador(r):
+    if st.button("← Voltar ao quadro"):
+        st.session_state.pop("ficha", None)
+        st.rerun()
+    html(f'<div class="hero"><h2>{esc(r["nome"])}</h2>'
+         f'<p>{esc(r["vaga"])} · {esc(r["email"])} · {esc(r["telefone"])} · '
+         f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
+         f'<p><b>{situacao_ficha(r)}</b></p></div>')
+
+    abas = st.tabs(["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
+                    "5 · Acessos TI", "6 · Integração", "7 · Início"])
+    with abas[0]:
+        aba_entrevista(r)
+    with abas[1]:
+        aba_formalizacao(r)
+    with abas[2]:
+        aba_documentos(r)
+    with abas[3]:
+        aba_contrato(r)
+    with abas[4]:
+        aba_acessos(r)
+    with abas[5]:
+        aba_integracao(r)
+    with abas[6]:
+        aba_inicio(r)
+
+
+def aba_entrevista(r):
     c1, c2 = st.columns([1, 2])
-    novo_status = c1.selectbox("Status", STATUS_ENTREVISTA, index=STATUS_ENTREVISTA.index(r["status_entrevista"])
+    novo_status = c1.selectbox("Status da entrevista", STATUS_ENTREVISTA,
+                               index=STATUS_ENTREVISTA.index(r["status_entrevista"])
                                if r["status_entrevista"] in STATUS_ENTREVISTA else 0, key=f"st_{r['id']}")
     obs = c2.text_input("Observações da entrevista", r["obs_entrevista"], key=f"obs_{r['id']}")
-    if st.button("Salvar status", key=f"salva_st_{r['id']}"):
+    if st.button("Salvar status", key=f"salva_st_{r['id']}", type="primary"):
         atualizar(r["id"], status_entrevista=novo_status, obs_entrevista=obs)
         st.success("Status atualizado.")
         st.rerun()
 
-    if r["status_entrevista"] == "Aprovado":
-        st.info(
-            f"Envie ao candidato o link deste app, o **código de acesso `{r['codigo_acesso']}`** e o e-mail "
-            f"cadastrado (`{r['email']}`) para ele preencher a Etapa 2."
-        )
-
+    st.markdown("##### Currículo")
     c1, c2 = st.columns([1, 2])
     with c1:
         mostrar_arquivo(r["curriculo"], "Currículo", key=f"dl_cv_{r['id']}")
@@ -714,13 +963,9 @@ def etapa_entrevistas():
     avaliacao_candidato(r)
 
 
-def caminho_local(valor):
-    return UPLOAD_DIR / valor[6:] if valor.startswith("local:") else None
-
-
 def avaliacao_candidato(r):
-    st.markdown("#### Avaliação de perfil")
-    st.caption("Cole aqui a nota e o resumo da avaliação feita pelo Claude no projeto e anexe o arquivo completo.")
+    st.markdown("##### Avaliação de perfil")
+    st.caption("Cole a nota e o resumo da avaliação feita pelo Claude no projeto e anexe o arquivo completo.")
     c1, c2 = st.columns([1, 3])
     try:
         nota_atual = float(r["avaliacao_nota"].replace(",", ".")) if r["avaliacao_nota"] else None
@@ -745,6 +990,149 @@ def avaliacao_candidato(r):
             st.markdown(local.read_text(encoding="utf-8", errors="ignore"))
 
 
+def aba_formalizacao(r):
+    if r["status_entrevista"] != "Aprovado":
+        st.info("O candidato ainda não foi aprovado na entrevista. Você já pode adiantar a formalização, se quiser.")
+    if r["form_enviado_em"]:
+        situ = "✅ CNPJ regular" if not cnpj_pendente(r) else (
+            "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else "⚠️ CNPJ fora das regras")
+        st.success(f"Formulário enviado em {r['form_enviado_em']} · {situ}")
+    else:
+        st.warning("O candidato ainda não preencheu o formulário.")
+
+    st.markdown("##### Enviar acesso ao candidato")
+    st.caption("Copie a mensagem abaixo e mande por WhatsApp ou e-mail.")
+    st.code(mensagem_acesso(r), language=None)
+
+    with st.expander("✏️ Preencher ou corrigir a Etapa 2 pelo candidato", expanded=not r["form_enviado_em"]):
+        formulario_candidato(r, prefixo="rh")
+
+
+def aba_documentos(r):
+    if not r["form_enviado_em"]:
+        st.warning("Ainda não há dados da Etapa 2 para conferir.")
+        return
+    c1, c2 = st.columns(2)
+    with c1, st.container(border=True):
+        st.markdown("**Dados pessoais**")
+        html(campos_html({
+            "Nome completo": r["nome_completo"], "CPF": r["cpf"], "RG": r["rg"],
+            "Nascimento": r["data_nascimento"], "Telefone": r["telefone"], "E-mail": r["email"],
+            "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
+        }))
+    with c2, st.container(border=True):
+        st.markdown("**Pessoa jurídica**")
+        html(campos_html({
+            "Possui CNPJ": r["possui_cnpj"], "CNPJ": fmt_cnpj(r["cnpj"]), "Razão social": r["razao_social"],
+            "Natureza jurídica": r["natureza_juridica"], "Situação": r["situacao_cnpj"],
+            "MEI": r["is_mei"], f"CNAE {fmt_cnae(CNAE_EXIGIDO)}": r["tem_cnae"],
+            "CNAE principal": r["cnae_principal"], "CNAEs secundários": r["cnaes_secundarios"],
+            "Validação": r["fonte_validacao"], "Apto": r["cnpj_apto"],
+        }))
+        mostrar_arquivo(r["cartao_cnpj"], "Cartão CNPJ", key=f"dl_cartao_{r['id']}")
+    if r["fonte_validacao"].startswith("Declaração"):
+        st.warning("A validação foi declarada pelo candidato. Confira MEI e CNAE no cartão CNPJ.")
+    st.write(f"Status da documentação: **{r['doc_status'] or 'Pendente'}**")
+    obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"], key=f"docobs_{r['id']}")
+    b1, b2 = st.columns(2)
+    if cnpj_pendente(r):
+        motivo = "não tem CNPJ" if r["possui_cnpj"] == "Não" else "tem CNPJ fora das regras (MEI, CNAE ou situação)"
+        st.warning(f"O candidato {motivo}. Você pode **aprovar com o CNPJ pendente** e seguir com as outras etapas. "
+                   "Quando o CNPJ for regularizado, volte aqui para a aprovação definitiva.")
+        if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
+                "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
+            atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
+            st.rerun()
+    else:
+        if r["doc_status"] == DOC_APROVADA_PEND:
+            st.info("O CNPJ foi regularizado. Confira o cartão e aprove a documentação definitiva.")
+        if r["doc_status"] != DOC_APROVADA and b1.button(
+                "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
+            atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
+            st.rerun()
+    if r["doc_status"] not in DOCS_LIBERADAS and b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
+        if not obs.strip():
+            st.error("Descreva o ajuste necessário.")
+        else:
+            atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
+            st.rerun()
+
+
+def aba_contrato(r):
+    enviado = ck(r, "contrato_enviado", "Contrato de parceria enviado para assinatura", "ce")
+    assinado = ck(r, "contrato_assinado", "Contrato assinado por ambas as partes", "ca")
+    if st.button("Salvar contrato", key=f"salva_ct_{r['id']}", type="primary"):
+        if assinado and not enviado:
+            st.error("Marque o envio antes da assinatura.")
+        else:
+            atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
+                      contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
+            st.rerun()
+    if r["contrato_data"]:
+        st.caption(f"Assinatura registrada em {r['contrato_data']}.")
+
+
+def aba_acessos(r):
+    a = ck(r, "ti_email", "Criação de e-mail corporativo", "ti1")
+    b = ck(r, "ti_looker", "Acesso ao sistema de gestão Looker", "ti2")
+    c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
+    if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
+        atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
+        st.rerun()
+
+
+def aba_integracao(r):
+    links = secret("links", {}) or {}
+    materiais = [
+        ("onb_material", "Material de Onboarding (manuais e processos)", "material_onboarding"),
+        ("onb_metas", "Detalhamento de metas e comissionamento", "metas_comissionamento"),
+        ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
+    ]
+    marcados = {}
+    for campo, rotulo, chave_link in materiais:
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            marcados[campo] = ck(r, campo, f"{rotulo} — apresentado", campo)
+        url = links.get(chave_link) if hasattr(links, "get") else None
+        if url:
+            c2.link_button("Abrir", url)
+        else:
+            c2.caption(f"Configure `links.{chave_link}` em secrets")
+    try:
+        di = date.fromisoformat(r["data_integracao"]) if r["data_integracao"] else date.today()
+    except ValueError:
+        di = date.today()
+    c1, c2 = st.columns(2)
+    data_int = c1.date_input("Data da reunião de integração", di, format="DD/MM/YYYY", key=f"di_{r['id']}")
+    padrinho = c2.text_input("Padrinho responsável pelo primeiro mês *", r["padrinho"], key=f"pad_{r['id']}")
+    if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
+        atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
+                  **{k: sn(v) for k, v in marcados.items()})
+        st.rerun()
+
+
+def aba_inicio(r):
+    if r["status_final"] == STATUS_ATIVO:
+        st.success(f"🎉 {STATUS_ATIVO} desde {r['operacao_iniciada_em']}.")
+        return
+    pend = pendencias(r)
+    if not cnpj_pendente(r) and r["doc_status"] == DOC_APROVADA_PEND:
+        pend.append("Aprovação definitiva dos documentos")
+    if pend:
+        st.warning("Ainda há pendências: **" + ", ".join(pend) + "**.")
+        forcar = st.checkbox("Iniciar a operação mesmo com essas pendências", key=f"forca_{r['id']}")
+    else:
+        st.write("Todas as etapas foram concluídas. Confirme o início das operações.")
+        forcar = True
+    if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary", disabled=not forcar):
+        atualizar(r["id"], status_final=STATUS_ATIVO, operacao_iniciada_em=agora())
+        st.balloons()
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Comparativo por vaga
+# ---------------------------------------------------------------------------
 def slug(txt):
     return re.sub(r"[^a-z0-9]+", "-", txt.lower()).strip("-") or "vaga"
 
@@ -762,7 +1150,7 @@ def comparativo():
     d.insert(0, "posicao", range(1, len(d) + 1))
     d["Currículo"] = d["curriculo"].map(lambda v: "Sim" if v else "")
 
-    st.markdown(f"#### Ranking · {vaga}")
+    st.markdown(f"##### Ranking · {vaga}")
     st.caption(f"{d['nota'].notna().sum()} de {len(d)} candidatos com avaliação.")
     st.dataframe(
         d[["posicao", "nome", "nota", "status_entrevista", "avaliacao_resumo", "Currículo"]].rename(columns={
@@ -772,7 +1160,7 @@ def comparativo():
         column_config={"Nota": st.column_config.ProgressColumn("Nota", min_value=0, max_value=10, format="%.1f")},
     )
 
-    st.markdown("#### Comparativo detalhado")
+    st.markdown("##### Comparativo detalhado")
     base = f"comparativo_{slug(vaga)}"
     existentes = sorted(UPLOAD_DIR.glob(base + ".*")) if UPLOAD_DIR.exists() else []
     if existentes:
@@ -801,182 +1189,18 @@ def comparativo():
         st.rerun()
 
 
-def mostrar_arquivo(valor, rotulo, key):
-    if not valor:
-        st.write(f"{rotulo}: *não anexado*")
-    elif valor.startswith("local:"):
-        caminho = UPLOAD_DIR / valor[6:]
-        if caminho.exists():
-            st.download_button(f"📎 Baixar {rotulo}", caminho.read_bytes(), caminho.name, key=key)
-        else:
-            st.warning(f"{rotulo}: arquivo não encontrado (o servidor pode ter sido reiniciado). Anexe de novo.")
-    else:
-        st.link_button(f"📎 Abrir {rotulo} no Drive", valor)
-
-
-def mostrar_cartao(valor):
-    mostrar_arquivo(valor, "Cartão CNPJ", key="dl_cartao")
-
-
-def ck(r, campo, rotulo, key):
-    return st.checkbox(rotulo, value=r[campo] == SIM, key=f"{key}_{r['id']}")
-
-
-def sn(v):
-    return SIM if v else ""
-
-
-def gestao_prestador():
-    df = carregar()
-    df = df[df["status_entrevista"] == "Aprovado"]
-    if df.empty:
-        st.info("Nenhum candidato aprovado na entrevista ainda.")
-        return
-    nomes = {r["id"]: f"{r['nome']} · {rotulo_etapa(r)}" for _, r in df.iterrows()}
-    r = buscar(st.selectbox("Prestador", list(nomes), format_func=nomes.get, key="sel_prestador"))
-    barra_progresso(r)
-    st.caption("As etapas são independentes: preencha cada aba na ordem que for mais conveniente.")
-
-    t3, t4, t5, t6, t7 = st.tabs([ETAPAS[3], ETAPAS[4], ETAPAS[5], ETAPAS[6], ETAPAS[7]])
-
-    # ---------------- Etapa 3 ----------------
-    with t3:
-        if not r["form_enviado_em"]:
-            st.warning("O candidato ainda não enviou o formulário da Etapa 2.")
-        else:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Dados pessoais**")
-                st.write({
-                    "Nome completo": r["nome_completo"], "CPF": r["cpf"], "RG": r["rg"],
-                    "Nascimento": r["data_nascimento"], "Telefone": r["telefone"], "E-mail": r["email"],
-                    "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
-                })
-            with c2:
-                st.markdown("**Pessoa jurídica**")
-                st.write({
-                    "Possui CNPJ": r["possui_cnpj"], "CNPJ": fmt_cnpj(r["cnpj"]), "Razão social": r["razao_social"],
-                    "Natureza jurídica": r["natureza_juridica"], "Situação": r["situacao_cnpj"],
-                    "MEI": r["is_mei"], f"CNAE {fmt_cnae(CNAE_EXIGIDO)}": r["tem_cnae"],
-                    "CNAE principal": r["cnae_principal"], "CNAEs secundários": r["cnaes_secundarios"],
-                    "Validação": r["fonte_validacao"], "Apto": r["cnpj_apto"],
-                })
-                mostrar_cartao(r["cartao_cnpj"])
-            if r["fonte_validacao"].startswith("Declaração"):
-                st.warning("A validação foi declarada pelo candidato. Confira MEI e CNAE no cartão CNPJ.")
-            st.write(f"Status atual da documentação: **{r['doc_status'] or 'Pendente'}**")
-            obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"],
-                                key=f"docobs_{r['id']}")
-            if cnpj_pendente(r):
-                motivo = "não tem CNPJ" if r["possui_cnpj"] == "Não" else "tem CNPJ fora das regras (MEI, CNAE ou situação)"
-                st.warning(
-                    f"O candidato {motivo}. Você pode **aprovar com o CNPJ pendente** para seguir com contrato, "
-                    "acessos e integração. O início das operações (Etapa 7) só libera depois que o CNPJ "
-                    "for regularizado: o candidato volta ao formulário com o mesmo código e valida o novo CNPJ."
-                )
-                b1, b2 = st.columns(2)
-                if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
-                        "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
-                    atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
-                    st.rerun()
-            else:
-                if r["doc_status"] == DOC_APROVADA_PEND:
-                    st.info("O candidato regularizou o CNPJ. Confira o cartão acima e aprove a documentação definitiva.")
-                b1, b2 = st.columns(2)
-                if r["doc_status"] != DOC_APROVADA and b1.button(
-                        "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
-                    atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
-                    st.rerun()
-            if r["doc_status"] not in DOCS_LIBERADAS:
-                if b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
-                    if not obs.strip():
-                        st.error("Descreva o ajuste necessário.")
-                    else:
-                        atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
-                        st.rerun()
-
-    # ---------------- Etapa 4 ----------------
-    with t4:
-        enviado = ck(r, "contrato_enviado", "Contrato de parceria enviado para assinatura", "ce")
-        assinado = ck(r, "contrato_assinado", "Contrato assinado por ambas as partes", "ca")
-        if st.button("Salvar contrato", key=f"salva_ct_{r['id']}", type="primary"):
-            if assinado and not enviado:
-                st.error("Marque o envio antes da assinatura.")
-            else:
-                atualizar(r["id"], contrato_enviado=sn(enviado), contrato_assinado=sn(assinado),
-                          contrato_data=agora() if assinado and not r["contrato_data"] else r["contrato_data"])
-                st.rerun()
-        if r["contrato_data"]:
-            st.caption(f"Assinatura registrada em {r['contrato_data']}.")
-
-    # ---------------- Etapa 5 ----------------
-    with t5:
-        a = ck(r, "ti_email", "Criação de e-mail corporativo", "ti1")
-        b = ck(r, "ti_looker", "Acesso ao sistema de gestão Looker", "ti2")
-        c = ck(r, "ti_propostas", "Acesso ao sistema de digitação de propostas", "ti3")
-        if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
-            atualizar(r["id"], ti_email=sn(a), ti_looker=sn(b), ti_propostas=sn(c))
-            st.rerun()
-
-    # ---------------- Etapa 6 ----------------
-    with t6:
-        links = secret("links", {}) or {}
-        materiais = [
-            ("onb_material", "Material de Onboarding (manuais e processos)", "material_onboarding"),
-            ("onb_metas", "Detalhamento de metas e comissionamento", "metas_comissionamento"),
-            ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
-        ]
-        marcados = {}
-        for campo, rotulo, chave_link in materiais:
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                marcados[campo] = ck(r, campo, f"{rotulo} — apresentado", campo)
-            url = links.get(chave_link) if hasattr(links, "get") else None
-            if url:
-                c2.link_button("Abrir", url)
-            else:
-                c2.caption(f"Configure `links.{chave_link}` em secrets")
-        try:
-            di = date.fromisoformat(r["data_integracao"]) if r["data_integracao"] else date.today()
-        except ValueError:
-            di = date.today()
-        data_int = st.date_input("Data da reunião de integração", di, format="DD/MM/YYYY", key=f"di_{r['id']}")
-        padrinho = st.text_input("Padrinho responsável pelo primeiro mês *", r["padrinho"], key=f"pad_{r['id']}")
-        if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
-            atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
-                      **{k: sn(v) for k, v in marcados.items()})
-            st.rerun()
-
-    # ---------------- Etapa 7 ----------------
-    with t7:
-        if r["status_final"] == STATUS_ATIVO:
-            st.success(f"🎉 {STATUS_ATIVO} desde {r['operacao_iniciada_em']}.")
-        else:
-            pend = pendencias(r)
-            if cnpj_pendente(r) is False and r["doc_status"] == DOC_APROVADA_PEND:
-                pend.append("Aprovação definitiva dos documentos")
-            if pend:
-                st.warning("Ainda há pendências: **" + ", ".join(pend) + "**.")
-                forcar = st.checkbox("Iniciar a operação mesmo com essas pendências", key=f"forca_{r['id']}")
-            else:
-                st.write("Todas as etapas foram concluídas. Confirme o início das operações.")
-                forcar = True
-            if st.button("🚀 Iniciar operação", key=f"ativa_{r['id']}", type="primary", disabled=not forcar):
-                atualizar(r["id"], status_final=STATUS_ATIVO, operacao_iniciada_em=agora())
-                st.balloons()
-                st.rerun()
-
-
 # =============================================================================
 # NAVEGAÇÃO
 # =============================================================================
+html(CSS)
 with st.sidebar:
-    st.header("Onboarding de Prestadores")
-    tela = st.radio("Menu", ["Visão do Candidato / Formulário", "Painel de Controle / RH"])
+    st.markdown("### 🤝 Onboarding de Prestadores")
+    tela = st.radio("Menu", ["Visão do Candidato / Formulário", "Painel de Controle / RH"], label_visibility="collapsed")
     st.divider()
     st.caption("Armazenamento: " + ("Google Sheets ✅" if usa_sheets() else "CSV local (demonstração)"))
     if st.session_state.get("rh_ok") and st.button("Sair do painel RH"):
         st.session_state.pop("rh_ok")
+        st.session_state.pop("ficha", None)
         st.rerun()
 
 if tela.startswith("Visão do Candidato"):
