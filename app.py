@@ -536,16 +536,6 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .passo {padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
         background: #F3F4F6; color: #4B5563; border: 1px solid #E5E7EB;}
 .passo.ok {background: #DCFCE7; color: #166534; border-color: #BBF7D0;}
-.barra {height: 8px; background: #E5E7EB; border-radius: 999px; margin: -6px 0 18px; overflow: hidden;}
-.barra span {display: block; height: 100%; background: linear-gradient(90deg, #22C55E, #16A34A);}
-.resumo-card {background: #fff; border: 1px solid; border-left-width: 5px; border-radius: 12px;
-              overflow: hidden; margin-bottom: 6px;}
-.resumo-topo {display: flex; gap: 6px; align-items: center; padding: 8px 12px; font-size: .9rem;}
-.resumo-topo span {margin-left: auto; font-size: .72rem; color: #6B7280;}
-.resumo-card ul {list-style: none; margin: 0; padding: 6px 12px 10px;}
-.resumo-card li {display: flex; gap: 8px; font-size: .85rem; color: #6B7280; padding: 3px 0; margin: 0;}
-.resumo-card li.ok {color: #111827;}
-.resumo-card li small {display: block; color: #6B7280; font-size: .74rem;}
 .campos {display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: .9rem; margin-bottom: 8px;}
 .campos .k {color: #6B7280;}
 .campos .v {color: #111827; word-break: break-word;}
@@ -1294,35 +1284,67 @@ def checklist_etapas(r):
     ]
 
 
-def aba_resumo(r):
+def onepage_html(r):
+    """Resumo do candidato em uma página, com estilos inline para colar ou anexar em e-mail."""
     status = status_etapas(r)
     itens = checklist_etapas(r)
     feitos = sum(ok for etapa in itens for ok, _, _ in etapa)
     total = sum(len(etapa) for etapa in itens)
     etapas_ok = sum(s == "ok" for s in status)
-    html('<div class="kpis">'
-         f'<div class="kpi"><b>{etapas_ok} de 7</b><span>etapas concluídas</span></div>'
-         f'<div class="kpi"><b>{feitos} de {total}</b><span>itens do checklist</span></div>'
-         f'<div class="kpi"><b class="txt">{esc(r["status_entrevista"] or "—")}</b><span>entrevista</span></div>'
-         f'<div class="kpi"><b class="txt">{esc(r["avaliacao_nota"] or "—")}</b><span>nota da avaliação</span></div>'
-         f'<div class="kpi"><b class="txt">{esc(r["status_final"] or "Em onboarding")}</b><span>situação</span></div>'
-         "</div>")
-    html(f'<div class="barra"><span style="width:{round(100 * feitos / total)}%"></span></div>')
-    for i, (nome, s, lista) in enumerate(zip(ABAS_FICHA, status, itens)):
-        if i % 3 == 0:
-            colunas = st.columns(3)  # uma linha por vez, para a leitura seguir a ordem das etapas
+    pct = round(100 * feitos / total)
+    fonte = "font-family:Arial,Helvetica,sans-serif;"
+    blocos = []
+    for nome, s, lista in zip(ABAS_FICHA, status, itens):
         icone, borda, fundo, legenda = CORES_STATUS[s]
         linhas = "".join(
-            f'<li class="{"ok" if ok else ""}"><span>{"✅" if ok else "⬜"}</span>'
-            f'<div>{esc(item)}{f"<small>{esc(det)}</small>" if det else ""}</div></li>'
+            f'<tr><td style="width:26px;padding:5px 0;vertical-align:top;font-size:15px">{"✅" if ok else "⬜"}</td>'
+            f'<td style="padding:5px 0;font-size:14px;color:{"#111827" if ok else "#6B7280"}">{esc(item)}</td>'
+            f'<td style="padding:5px 0;font-size:13px;color:#6B7280;text-align:right">{esc(det)}</td></tr>'
             for ok, item, det in lista)
-        with colunas[i % 3]:
-            html(f'<div class="resumo-card" style="border-color:{borda}">'
-                 f'<div class="resumo-topo" style="background:{fundo}">{icone} <b>{esc(nome)}</b>'
-                 f'<span>{legenda}</span></div><ul>{linhas}</ul></div>')
-            if st.button("Abrir etapa", key=f"ir_{i}_{r['id']}", width="stretch"):
-                st.session_state["ficha_ir"] = i
-                st.rerun()
+        blocos.append(
+            f'<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 12px;'
+            f'border:1px solid {borda};border-left:6px solid {borda};border-radius:8px">'
+            f'<tr><td style="background:{fundo};padding:10px 14px">'
+            f'<span style="font-size:15px;font-weight:bold;color:#111827">{icone} {esc(nome)}</span>'
+            f'<span style="float:right;font-size:12px;color:#374151;padding-top:2px">{legenda}</span></td></tr>'
+            f'<tr><td style="padding:4px 14px 8px"><table width="100%" cellpadding="0" cellspacing="0">{linhas}'
+            f"</table></td></tr></table>")
+    dados = [("Vaga", r["vaga"]), ("E-mail", r["email"]), ("Telefone", r["telefone"]),
+             ("Código de acesso", r["codigo_acesso"]), ("Situação", r["status_final"] or "Em onboarding")]
+    cab = "".join(f'<td style="padding:0 18px 0 0;font-size:12px;color:#E0E7FF">{esc(k)}<br>'
+                  f'<b style="font-size:14px;color:#fff">{esc(v) or "—"}</b></td>' for k, v in dados)
+    return (
+        f'<div style="{fonte}background:#F3F4F6;padding:20px 0">'
+        f'<table width="680" align="center" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%;'
+        f'background:#fff;border-radius:12px;border-collapse:separate">'
+        f'<tr><td style="background:#4F46E5;padding:22px 24px;border-radius:12px 12px 0 0">'
+        f'<div style="font-size:12px;color:#C7D2FE;letter-spacing:.06em">RESUMO DE ONBOARDING</div>'
+        f'<div style="font-size:24px;font-weight:bold;color:#fff;margin:4px 0 14px">{esc(r["nome"])}</div>'
+        f'<table cellpadding="0" cellspacing="0"><tr>{cab}</tr></table></td></tr>'
+        f'<tr><td style="padding:18px 24px 6px">'
+        f'<div style="font-size:14px;color:#111827"><b>{etapas_ok} de 7 etapas concluídas</b> · '
+        f"{feitos} de {total} itens do checklist ({pct}%)</div>"
+        f'<div style="background:#E5E7EB;height:8px;border-radius:4px;margin:8px 0 6px">'
+        f'<div style="background:#16A34A;height:8px;width:{pct}%;border-radius:4px"></div></div>'
+        f'<div style="font-size:12px;color:#6B7280">'
+        + " · ".join(f"{ic} {txt}" for ic, _, _, txt in CORES_STATUS.values()) +
+        f'</div></td></tr><tr><td style="padding:12px 24px 8px">{"".join(blocos)}</td></tr>'
+        f'<tr><td style="padding:4px 24px 20px;font-size:11px;color:#9CA3AF">'
+        f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')} pelo sistema de Onboarding de Prestadores."
+        f"</td></tr></table></div>"
+    )
+
+
+def aba_resumo(r):
+    pagina = onepage_html(r)
+    c1, c2 = st.columns([1, 2], vertical_alignment="center")
+    arquivo = (f'<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Resumo · {esc(r["nome"])}'
+               f"</title></head><body style=\"margin:0\">{pagina}</body></html>")
+    c1.download_button("📧 Baixar one page para e-mail", arquivo.encode("utf-8"),
+                       f"resumo_{slug(r['nome'])}.html", "text/html", key=f"dl_resumo_{r['id']}", type="primary")
+    c2.caption("Abra o arquivo no navegador, selecione tudo (Ctrl+A), copie e cole no corpo do e-mail. "
+               "Também dá para anexar o arquivo ou salvar como PDF (Ctrl+P).")
+    st.html(pagina)
 
 
 def aba_entrevista(r):
