@@ -259,13 +259,71 @@ def atualizar(pid, **campos):
     if len(idx) == 0:
         st.error("Registro não encontrado.")
         return
+    antes = df.loc[idx[0]].to_dict()
     for k, v in campos.items():
         df.loc[idx, k] = "" if v is None else str(v)
     df.loc[idx, "atualizado_em"] = agora()
+    depois = df.loc[idx[0]].to_dict()
     if usa_firestore():  # grava só o documento do prestador
-        _gravar_firestore(df.loc[idx[0]].to_dict())
+        _gravar_firestore(depois)
     else:
         salvar(df)
+    notificar_mudanca_etapa(antes, depois)
+
+
+# =============================================================================
+# E-MAIL COM O RESUMO A CADA MUDANÇA DE ETAPA (Gmail com senha de app)
+# =============================================================================
+DESTINATARIOS_PADRAO = ["financeirolancefinanciamentos@gmail.com", "operacionalc6ehs@gmail.com"]
+
+
+def cfg_email(chave, padrao=None):
+    try:
+        return (secret("email") or {}).get(chave, padrao)
+    except Exception:
+        return padrao
+
+
+def usa_email():
+    return bool(cfg_email("remetente")) and bool(cfg_email("senha_app"))
+
+
+def notificar_mudanca_etapa(antes, depois):
+    """Envia o one page por e-mail quando alguma etapa muda de situação (ex.: não iniciada → concluída)."""
+    if not usa_email():
+        return
+    st_antes, st_depois = status_etapas(antes), status_etapas(depois)
+    mudancas = [f"{nome}: {CORES_STATUS[a][3]} → {CORES_STATUS[d][0]} {CORES_STATUS[d][3]}"
+                for nome, a, d in zip(ABAS_FICHA, st_antes, st_depois) if a != d]
+    if not mudancas:
+        return
+    try:
+        enviar_resumo(depois, mudancas)
+        st.session_state["_email_ok"] = True
+    except Exception as e:
+        st.session_state["_email_erro"] = str(e)
+
+
+def enviar_resumo(r, mudancas):
+    import smtplib
+    from email.message import EmailMessage
+
+    destinos = list(cfg_email("destinatarios", DESTINATARIOS_PADRAO))
+    msg = EmailMessage()
+    etapa = mudancas[0].split(":")[0] + (f" (+{len(mudancas) - 1})" if len(mudancas) > 1 else "")
+    msg["Subject"] = f"Onboarding · {r['nome']} · {etapa} atualizada"
+    msg["From"] = f"Onboarding de Prestadores <{cfg_email('remetente')}>"
+    msg["To"] = ", ".join(destinos)
+    texto = "O que mudou:\n" + "\n".join(f"- {m}" for m in mudancas)
+    msg.set_content(texto + "\n\nAbra este e-mail em um leitor com HTML para ver o resumo completo.")
+    lista = "".join(f"<li>{esc(m)}</li>" for m in mudancas)
+    msg.add_alternative(
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
+        f'margin:0 auto 12px;"><b>O que mudou agora:</b><ul style="margin:6px 0 0;">{lista}</ul></div>'
+        + onepage_html(r), subtype="html")
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
+        smtp.login(cfg_email("remetente"), str(cfg_email("senha_app")).replace(" ", ""))
+        smtp.send_message(msg)
 
 
 def criar(nome, email, telefone, vaga, status):
@@ -939,6 +997,12 @@ def mostrar_aviso():
     aviso = st.session_state.pop("_aviso", None)
     if aviso:
         st.toast(aviso[0], icon=aviso[1])
+    ok, erro = st.session_state.pop("_email_ok", None), st.session_state.pop("_email_erro", None)
+    if st.session_state.get("rh_ok"):  # o candidato não precisa saber do e-mail interno
+        if ok:
+            st.toast("Resumo enviado por e-mail.", icon="📧")
+        if erro:
+            st.toast(f"Não consegui enviar o resumo por e-mail: {erro}", icon="⚠️")
 
 
 def html(txt):
@@ -2232,7 +2296,7 @@ else:
             html('<div class="marca">🤝 Onboarding</div>')
             menu_rh()
             st.divider()
-            st.caption(nome_armazenamento())
+            st.caption(nome_armazenamento() + " · E-mail do resumo: " + ("ligado" if usa_email() else "desligado"))
             if st.button("↩ Sair do painel RH", key="sair_rh", width="stretch", type="tertiary"):
                 for chave in ("rh_ok", "ficha"):
                     st.session_state.pop(chave, None)
