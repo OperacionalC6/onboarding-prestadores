@@ -277,6 +277,34 @@ def atualizar(pid, **campos):
     notificar_mudanca_etapa(antes, depois)
 
 
+CAMPOS_ANEXO = ("curriculo", "avaliacao", "cartao_cnpj", "contrato_arquivo")
+
+
+def excluir(pid):
+    """Apaga o prestador e os anexos dele."""
+    df = carregar()
+    linha = df[df["id"] == pid]
+    if linha.empty:
+        return
+    for campo in CAMPOS_ANEXO:
+        apagar_anexo(linha.iloc[0][campo])
+    if usa_firestore():
+        _sessao_gcp().delete(_url_firestore(pid), timeout=30).raise_for_status()
+        _ler_firestore.clear()
+    else:
+        salvar(df[df["id"] != pid])
+
+
+def apagar_anexo(valor):
+    try:
+        if valor.startswith(("gcs:", "fs:")):
+            apagar_nuvem(valor.split(":", 1)[1])
+        elif valor.startswith("local:"):
+            (UPLOAD_DIR / valor[6:]).unlink(missing_ok=True)
+    except Exception:
+        pass  # anexo que não existe mais não impede a exclusão
+
+
 # =============================================================================
 # E-MAIL COM O RESUMO A CADA MUDANÇA DE ETAPA (Gmail com senha de app)
 # =============================================================================
@@ -1814,10 +1842,36 @@ def ir_para_proxima(pid, atual, avancar=None):
     return f" Tudo pronto: {ABAS_FICHA[6]}."
 
 
+def _fechar_exclusao():
+    st.session_state.pop("excluir_aberto", None)
+
+
+@st.dialog("Excluir candidato", on_dismiss=_fechar_exclusao)
+def dialogo_excluir(r):
+    st.markdown(f"Isto apaga **{esc(r['nome'])}** e todos os anexos (currículo, cartão CNPJ, contrato etc.). "
+                "**Não dá para desfazer.**")
+    confirma = st.text_input("Para confirmar, digite EXCLUIR", key=f"conf_excluir_{r['id']}")
+    c1, c2 = st.columns(2)
+    if c1.button("Cancelar", width="stretch"):
+        _fechar_exclusao()
+        st.rerun()
+    if c2.button("🗑️ Excluir", type="primary", width="stretch", disabled=confirma.strip().upper() != "EXCLUIR"):
+        excluir(r["id"])
+        _fechar_exclusao()
+        st.session_state.pop("ficha", None)
+        avisar(f"{r['nome']} foi excluído.", "🗑️")
+        st.rerun()
+
+
 def ficha_prestador(r):
-    if st.button("← Voltar ao quadro"):
+    c1, _, c3 = st.columns([1, 3, 1])
+    if c1.button("← Voltar ao quadro"):
         st.session_state.pop("ficha", None)
         st.rerun()
+    if c3.button("🗑️ Excluir candidato", type="tertiary", key=f"excluir_{r['id']}", width="stretch"):
+        st.session_state["excluir_aberto"] = r["id"]
+    if st.session_state.get("excluir_aberto") == r["id"]:  # mantém a confirmação aberta entre reruns
+        dialogo_excluir(r)
     html(f'<div class="hero"><h2>{esc(r["nome"])}</h2>'
          f'<p>{esc(r["vaga"])} · {esc(r["email"])} · {esc(r["telefone"])} · '
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
