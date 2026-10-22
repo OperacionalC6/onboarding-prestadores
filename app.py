@@ -499,6 +499,19 @@ def rotulo_etapa(r):
 CSS = """
 <style>
 .block-container {padding-top: 3.2rem; max-width: 1600px;}
+[data-testid="stSidebar"][data-collapsed="false"] {width: 220px !important; min-width: 220px !important;}
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding: 1rem .8rem;}
+[data-testid="stSidebar"] .stButton button {width: 100%; justify-content: flex-start; padding: 6px 12px;
+                                            min-height: 2.3rem; border-radius: 8px;}
+[data-testid="stSidebar"] .stButton button > div {justify-content: flex-start; width: 100%;}
+[data-testid="stSidebar"] .stButton button p {font-size: .9rem; white-space: nowrap; text-align: left;}
+[data-testid="stSidebar"] button[kind="tertiary"]:hover {background: #E0E7FF;}
+[data-testid="stSidebarCollapseButton"] {visibility: visible !important; opacity: 1 !important; display: flex !important;}
+[data-testid="stSidebar"] hr {margin: .6rem 0;}
+.marca {font-weight: 750; font-size: 1.05rem; color: #1F2937; margin: 0 0 12px 4px;}
+.topo-pagina {margin: 0 0 14px;}
+.topo-pagina h2 {font-size: 1.5rem; font-weight: 750; color: #1F2937; padding: 0; margin: 0;}
+.topo-pagina p {color: #6B7280; margin: 2px 0 0; font-size: .92rem;}
 .stTabs [role="tablist"] {gap: 6px; flex-wrap: wrap; border-bottom: none;}
 .stTabs [data-testid="stTab"] {background: #fff; border: 1px solid #E5E7EB; border-radius: 10px;
                             padding: 6px 14px; height: auto; margin: 0;}
@@ -977,18 +990,21 @@ def tela_rh():
         return
     st.session_state.pop("ficha", None)
 
-    html('<div class="hero"><h2>📋 Painel de Controle · RH</h2>'
-         '<p>Acompanhe cada prestador da entrevista ao início das operações.</p></div>')
-    aba_quadro, aba_novo, aba_comp, aba_base = st.tabs(
-        ["🗂️ Quadro", "➕ Novo candidato", "📈 Comparativo", "📋 Base completa"])
-    with aba_quadro:
-        quadro_kanban()
-    with aba_novo:
-        novo_candidato()
-    with aba_comp:
-        comparativo()
-    with aba_base:
-        base_completa()
+    pagina = st.session_state.get("rh_pagina", MENU_RH[0][0])
+    titulo, descricao, funcao = {p[0]: p[1:] for p in MENU_RH}[pagina]
+    html(f'<div class="topo-pagina"><h2>{titulo}</h2><p>{descricao}</p></div>')
+    funcao()
+
+
+def menu_rh():
+    """Menu lateral do painel RH. Clicar em uma página também fecha a ficha aberta."""
+    atual = st.session_state.get("rh_pagina", MENU_RH[0][0])
+    for chave, titulo, _, _ in MENU_RH:
+        ativo = atual == chave and not st.session_state.get("ficha")
+        if st.button(titulo, key=f"menu_{chave}", width="stretch", type="primary" if ativo else "tertiary"):
+            st.session_state["rh_pagina"] = chave
+            st.session_state.pop("ficha", None)
+            st.rerun()
 
 
 def kpis(df):
@@ -1035,7 +1051,7 @@ def quadro_kanban():
     df = carregar()
     kpis(df)
     if df.empty:
-        st.info("Nenhum candidato ainda. Cadastre o primeiro na aba **➕ Novo candidato**.")
+        st.info("Nenhum candidato ainda. Cadastre o primeiro em **➕ Novo candidato**, no menu lateral.")
         return
     f1, f2, f3 = st.columns([2, 2, 1.4])
     busca = f1.text_input("Buscar por nome ou código", key="kb_busca", placeholder="Digite para filtrar")
@@ -1700,6 +1716,15 @@ def comparativo():
         st.rerun()
 
 
+# Páginas do painel RH: (chave, título no menu, descrição, função)
+MENU_RH = [
+    ("quadro", "🗂️ Quadro", "Acompanhe cada prestador da entrevista ao início das operações.", quadro_kanban),
+    ("novo", "➕ Novo candidato", "Cadastre o candidato e gere o código de acesso.", novo_candidato),
+    ("comparativo", "📈 Comparativo", "Ranking e avaliações por vaga.", comparativo),
+    ("base", "📋 Base completa", "Todos os registros, com exportação em CSV.", base_completa),
+]
+
+
 # =============================================================================
 # NAVEGAÇÃO
 # =============================================================================
@@ -1715,9 +1740,11 @@ if st.session_state["modo"] == "candidato":
 else:
     if st.session_state.get("rh_ok"):
         with st.sidebar:
-            st.markdown("### 🤝 Onboarding de Prestadores")
+            html('<div class="marca">🤝 Onboarding</div>')
+            menu_rh()
+            st.divider()
             st.caption("Armazenamento: " + ("Google Sheets ✅" if usa_sheets() else "CSV local (demonstração)"))
-            if st.button("Sair do painel RH", width="stretch"):
+            if st.button("↩ Sair do painel RH", key="sair_rh", width="stretch", type="tertiary"):
                 for chave in ("rh_ok", "ficha"):
                     st.session_state.pop(chave, None)
                 st.session_state["modo"] = "candidato"
