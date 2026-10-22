@@ -50,6 +50,11 @@ DOC_APROVADA = "Aprovada"
 DOC_APROVADA_PEND = "Aprovada (CNPJ pendente)"
 DOCS_LIBERADAS = (DOC_APROVADA, DOC_APROVADA_PEND)
 SIM = "Sim"
+NA = "N/A"  # item que não se aplica ao prestador (não elegível); conta como resolvido
+
+
+def resolvido(v):
+    return v in (SIM, NA)
 
 DATA_DIR = Path(__file__).parent / "data"
 CSV_PATH = DATA_DIR / "prestadores.csv"
@@ -72,6 +77,7 @@ COLUNAS = [
     "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
     # Etapa 5
     "ti_email", "ti_looker", "ti_propostas", "ti_email_usuario", "ti_looker_usuario", "ti_propostas_usuario",
+    "mat_computador", "mat_celular", "mat_uniforme",
     # Etapa 6
     "onb_material", "onb_metas", "onb_cultura", "data_integracao", "padrinho",
     # Etapa 7
@@ -830,11 +836,12 @@ def etapas_concluidas(r):
         2: bool(r["form_enviado_em"]) and not cnpj_pendente(r),
         3: r["doc_status"] in DOCS_LIBERADAS,
         4: r["contrato_assinado"] == SIM,
-        5: all(r[k] == SIM for k in ("ti_email", "ti_looker", "ti_propostas")),
-        6: bool(r["padrinho"]) and all(r[k] == SIM for k in ("onb_material", "onb_metas", "onb_cultura")),
+        5: all(resolvido(r[k]) for k in ITENS_ACESSOS),
+        6: bool(r["padrinho"]) and all(resolvido(r[k]) for k in ("onb_material", "onb_metas", "onb_cultura")),
     }
 
 
+ITENS_ACESSOS = ("ti_email", "ti_looker", "ti_propostas", "mat_computador", "mat_celular", "mat_uniforme")
 NOMES_CURTOS = {2: "CNPJ/Formulário", 3: "Documentos", 4: "Contrato", 5: "Acessos", 6: "Integração"}
 
 
@@ -950,6 +957,7 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .cel-ajuda {font-size: .8rem; color: #6B7280; margin-bottom: 6px;}
 .cel-ddi {background: #EEF0F7; border-radius: 8px; height: 2.5rem; display: flex; align-items: center;
           justify-content: center; font-size: 1.3rem; margin-bottom: 1rem;}
+.item-ck {font-size: .95rem; color: #1F2937; padding: 6px 0;}
 .erro-campo {color: #B91C1C; font-size: .8rem; margin: -10px 0 8px;}
 .campos {display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: .9rem; margin-bottom: 8px;}
 .campos .k {color: #6B7280;}
@@ -983,7 +991,7 @@ KANBAN = [
     (2, "📝 Formalização", "#0EA5E9"),
     (3, "📂 Documentos", "#14B8A6"),
     (4, "✍️ Contrato", "#F59E0B"),
-    (5, "💻 Acessos TI", "#8B5CF6"),
+    (5, "💻 Acessos e materiais", "#8B5CF6"),
     (6, "🤝 Integração", "#EC4899"),
     (7, "🚀 Início / Ativos", "#22C55E"),
 ]
@@ -1074,8 +1082,9 @@ def quem_responde(r):
     else:
         itens.append((4, "Contrato", "nos", "Vamos preparar e enviar o seu contrato para assinatura."))
 
-    itens.append((5, "Acessos", "ok", "E-mail, Looker e sistema de propostas liberados.") if feitas[5]
-                 else (5, "Acessos", "nos", "Vamos criar seus acessos (e-mail, Looker e sistema de propostas)."))
+    itens.append((5, "Acessos e materiais", "ok", "Acessos liberados e materiais entregues.") if feitas[5]
+                 else (5, "Acessos e materiais", "nos",
+                       "Vamos criar seus acessos (e-mail, Looker, propostas) e separar computador, celular e uniforme."))
     itens.append((6, "Integração", "ok", "Integração concluída.") if feitas[6]
                  else (6, "Integração", "nos", "Vamos agendar sua integração e apresentar seu padrinho."))
     if r["status_final"] == STATUS_ATIVO:
@@ -1687,6 +1696,21 @@ def sn(v):
     return SIM if v else ""
 
 
+OPCOES_OK_NA = {"✅ OK": SIM, "➖ N/A": NA}
+
+
+def ok_na(r, campo, key, ajuda=None):
+    """Botões OK / N/A do item; nenhum selecionado = pendente. Devolve "Sim", "N/A" ou ""."""
+    atual = next((k for k, v in OPCOES_OK_NA.items() if v == r[campo]), None)
+    escolha = st.segmented_control(campo, list(OPCOES_OK_NA), default=atual, label_visibility="collapsed",
+                                   key=f"{key}_{r['id']}_{r['atualizado_em']}", help=ajuda)
+    return OPCOES_OK_NA.get(escolha, "")
+
+
+def linha_item(rotulo):
+    st.markdown(f'<div class="item-ck">{esc(rotulo)}</div>', unsafe_allow_html=True)
+
+
 def mensagem_acesso(r):
     return (f"Olá, {r['nome'].split(' ')[0]}! Para seguir com o seu onboarding, acesse "
             f"{secret('app_url', 'https://ehsonboard.streamlit.app')} e entre com:\n"
@@ -1709,7 +1733,7 @@ def situacao_ficha(r):
 
 ABA_RESUMO = "📋 Resumo"
 ABAS_FICHA = ["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
-              "5 · Acessos TI", "6 · Integração", "7 · Início"]
+              "5 · Acessos e materiais", "6 · Integração", "7 · Início"]
 # status: (ícone, cor da borda, cor de fundo, legenda)
 CORES_STATUS = {
     "ok": ("✅", "#16A34A", "#ECFDF3", "Concluída"),
@@ -1737,9 +1761,9 @@ def status_etapas(r):
     else:
         st3 = "andamento" if form or r["doc_status"] == DOC_APROVADA_PEND else "todo"
     st4 = "ok" if feitas[4] else ("andamento" if r["contrato_enviado"] == SIM else "todo")
-    ti = [r[k] == SIM for k in ("ti_email", "ti_looker", "ti_propostas")]
+    ti = [resolvido(r[k]) for k in ITENS_ACESSOS]
     st5 = "ok" if all(ti) else ("andamento" if any(ti) else "todo")
-    onb = [r[k] == SIM for k in ("onb_material", "onb_metas", "onb_cultura")] + [bool(r["padrinho"])]
+    onb = [resolvido(r[k]) for k in ("onb_material", "onb_metas", "onb_cultura")] + [bool(r["padrinho"])]
     st6 = "ok" if all(onb) else ("andamento" if any(onb) else "todo")
     if r["status_final"] == STATUS_ATIVO:
         st7 = "ok"
@@ -1837,7 +1861,11 @@ def checklist_etapas(r):
     """Itens de cada etapa para o resumo: (concluído, item, detalhe)."""
     def arq(v):
         return "anexado" if v else ""
+    def det(v, txt=""):
+        return "N/A (não elegível)" if v == NA else txt
     acessos = [("ti_email", "E-mail corporativo"), ("ti_looker", "Looker"), ("ti_propostas", "Sistema de propostas")]
+    equipamentos = [("mat_computador", "Computador corporativo"), ("mat_celular", "Celular corporativo"),
+                    ("mat_uniforme", "Uniforme")]
     materiais = [("onb_material", "Material de onboarding"), ("onb_metas", "Metas e comissionamento"),
                  ("onb_cultura", "Cultura e código de conduta")]
     cnpj_txt = fmt_cnpj(r["cnpj"]) if r["possui_cnpj"] == SIM else ("não possui" if r["possui_cnpj"] == "Não" else "")
@@ -1857,8 +1885,9 @@ def checklist_etapas(r):
         [(r["contrato_enviado"] == SIM, "Contrato enviado", ""),
          (r["contrato_assinado"] == SIM, "Contrato assinado", data_br(r["contrato_data"])),
          (bool(r["contrato_arquivo"]), "Contrato assinado anexado", arq(r["contrato_arquivo"]))],
-        [(r[c] == SIM, nome, r[f"{c}_usuario"]) for c, nome in acessos],
-        [(r[c] == SIM, nome, "apresentado" if r[c] == SIM else "") for c, nome in materiais]
+        [(resolvido(r[c]), nome, det(r[c], r[f"{c}_usuario"])) for c, nome in acessos]
+        + [(resolvido(r[c]), nome, det(r[c], "entregue" if r[c] == SIM else "")) for c, nome in equipamentos],
+        [(resolvido(r[c]), nome, det(r[c], "apresentado" if r[c] == SIM else "")) for c, nome in materiais]
         + [(bool(r["data_integracao"]), "Reunião de integração",
             date.fromisoformat(r["data_integracao"]).strftime("%d/%m/%Y") if r["data_integracao"] else ""),
            (bool(r["padrinho"]), "Padrinho", r["padrinho"])],
@@ -1879,7 +1908,7 @@ def onepage_html(r):
     for nome, s, lista in zip(ABAS_FICHA, status, itens):
         icone, borda, fundo, legenda = CORES_STATUS[s]
         linhas = "".join(
-            f'<tr><td style="width:26px;padding:5px 0;vertical-align:top;font-size:15px">{"✅" if ok else "⬜"}</td>'
+            f'<tr><td style="width:26px;padding:5px 0;vertical-align:top;font-size:15px">{"➖" if det.startswith("N/A") else "✅" if ok else "⬜"}</td>'
             f'<td style="padding:5px 0;font-size:14px;color:{"#111827" if ok else "#6B7280"}">{esc(item)}</td>'
             f'<td style="padding:5px 0;font-size:13px;color:#6B7280;text-align:right">{esc(det)}</td></tr>'
             for ok, item, det in lista)
@@ -2120,17 +2149,34 @@ def aba_acessos(r):
         ("ti_propostas", "Acesso ao sistema de digitação de propostas", "Usuário do sistema de propostas", ""),
     ]
     campos, faltando = {}, []
+    st.caption("Marque **OK** quando estiver feito ou **N/A** quando o prestador não for elegível. "
+               "Sem marcação, o item fica pendente.")
+    st.markdown("###### Acessos")
     for campo, rotulo, rotulo_usuario, exemplo in acessos:
-        c1, c2 = st.columns([1, 1], vertical_alignment="bottom")
+        c1, c2, c3 = st.columns([2.2, 1.3, 2.5], vertical_alignment="center")
         with c1:
-            liberado = ck(r, campo, rotulo, campo)
-        usuario = c2.text_input(rotulo_usuario, r[f"{campo}_usuario"], placeholder=exemplo,
+            linha_item(rotulo)
+        with c2:
+            situacao = ok_na(r, campo, campo)
+        usuario = c3.text_input(rotulo_usuario, r[f"{campo}_usuario"], placeholder=f"{rotulo_usuario} ({exemplo})"
+                                if exemplo else rotulo_usuario, label_visibility="collapsed",
                                 key=f"{campo}_usuario_{r['id']}").strip()
-        liberado = liberado or bool(usuario)  # informar o usuário já marca o acesso como liberado
-        msg = (erro_email(usuario) if campo == "ti_email" else erro_usuario(usuario)) if liberado else ""
+        if usuario and not situacao:
+            situacao = SIM  # informar o usuário já marca o acesso como liberado
+        if situacao == NA:
+            usuario = ""
+        msg = (erro_email(usuario) if campo == "ti_email" else erro_usuario(usuario)) if situacao == SIM else ""
         if msg:
             faltando.append(f"{rotulo_usuario}: {msg}")
-        campos[campo], campos[f"{campo}_usuario"] = sn(liberado), usuario
+        campos[campo], campos[f"{campo}_usuario"] = situacao, usuario
+    st.markdown("###### Materiais entregues")
+    for campo, rotulo in [("mat_computador", "Computador corporativo"), ("mat_celular", "Celular corporativo"),
+                          ("mat_uniforme", "Uniforme")]:
+        c1, c2, _ = st.columns([2.2, 1.3, 2.5], vertical_alignment="center")
+        with c1:
+            linha_item(rotulo)
+        with c2:
+            campos[campo] = ok_na(r, campo, campo)
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
         if faltando:
             for f in faltando:
@@ -2149,15 +2195,16 @@ def aba_integracao(r):
         ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
     ]
     marcados = {}
+    st.caption("Marque **OK** quando o conteúdo for apresentado ou **N/A** quando não se aplicar ao prestador.")
     for campo, rotulo, chave_link in materiais:
-        c1, c2 = st.columns([3, 1])
+        c1, c2, c3 = st.columns([2.6, 1.3, 1], vertical_alignment="center")
         with c1:
-            marcados[campo] = ck(r, campo, f"{rotulo} — apresentado", campo)
+            linha_item(rotulo)
+        with c2:
+            marcados[campo] = ok_na(r, campo, campo)
         url = links.get(chave_link) if hasattr(links, "get") else None
         if url:
-            c2.link_button("Abrir", url)
-        else:
-            c2.caption(f"Configure `links.{chave_link}` em secrets")
+            c3.link_button("Abrir", url)
     try:
         di = date.fromisoformat(r["data_integracao"]) if r["data_integracao"] else date.today()
     except ValueError:
@@ -2170,7 +2217,7 @@ def aba_integracao(r):
             st.error("Padrinho: " + erro_nome(padrinho, completo=False))
             return
         atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
-                  **{k: sn(v) for k, v in marcados.items()})
+                  **marcados)
         avisar("Integração salva." + ir_para_proxima(r["id"], 5, True))
         st.rerun()
 
