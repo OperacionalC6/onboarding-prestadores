@@ -258,6 +258,141 @@ def cpf_valido(cpf):
     return True
 
 
+def fmt_cpf(c):
+    c = so_digitos(c)
+    return f"{c[:3]}.{c[3:6]}.{c[6:9]}-{c[9:]}" if len(c) == 11 else c
+
+
+def tel_digitos(t):
+    d = so_digitos(t)
+    if len(d) in (12, 13) and d.startswith("55"):  # +55 informado
+        d = d[2:]
+    return d.lstrip("0") if len(d) in (11, 12) and d.startswith("0") else d
+
+
+def fmt_tel(t):
+    d = tel_digitos(t)
+    if len(d) == 11:
+        return f"({d[:2]}) {d[2:7]}-{d[7:]}"
+    if len(d) == 10:
+        return f"({d[:2]}) {d[2:6]}-{d[6:]}"
+    return t
+
+
+# Cada validador devolve "" quando o valor está certo ou a mensagem de erro.
+def erro_obrigatorio(v):
+    return "" if str(v).strip() else "Campo obrigatório."
+
+
+def erro_nome(v, completo=True):
+    v = " ".join(str(v).split())
+    if not v:
+        return "Campo obrigatório."
+    if not re.fullmatch(r"[A-Za-zÀ-ÿ' .-]+", v):
+        return "Use apenas letras."
+    if completo and len([p for p in v.split(" ") if len(p) > 1]) < 2:
+        return "Informe nome e sobrenome."
+    return "" if len(v) >= 3 else "Nome muito curto."
+
+
+def erro_email(v):
+    v = str(v).strip()
+    if not v:
+        return "Campo obrigatório."
+    ok = re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}", v)
+    return "" if ok else "E-mail inválido. Exemplo: nome@empresa.com.br"
+
+
+def erro_tel(v):
+    if not str(v).strip():
+        return "Campo obrigatório."
+    d = tel_digitos(v)
+    if len(d) != 11:
+        return "Informe o celular com DDD: (99) 99999-9999."
+    if d[0] == "0" or d[1] == "0":
+        return "DDD inválido."
+    if d[2] != "9":
+        return "Celular deve começar com 9 depois do DDD."
+    return ""
+
+
+def erro_cpf(v):
+    if not str(v).strip():
+        return "Campo obrigatório."
+    return "" if cpf_valido(v) else "CPF inválido. Confira os números."
+
+
+def erro_rg(v):
+    d = re.sub(r"[^0-9A-Za-z]", "", str(v))
+    if not d:
+        return "Campo obrigatório."
+    return "" if 4 <= len(d) <= 14 and any(ch.isdigit() for ch in d) else "RG inválido."
+
+
+def erro_cep(v):
+    if not str(v).strip():
+        return "Campo obrigatório."
+    return "" if len(so_digitos(v)) == 8 else "CEP com 8 números: 00000-000."
+
+
+def erro_numero(v):
+    v = str(v).strip()
+    if not v:
+        return "Campo obrigatório. Use S/N se não houver."
+    return "" if re.fullmatch(r"(?i)\d{1,6}[A-Za-z]?|s/?n", v) else "Use só números (ex.: 120 ou 120A) ou S/N."
+
+
+def erro_texto(v, minimo=2):
+    v = str(v).strip()
+    if not v:
+        return "Campo obrigatório."
+    return "" if len(v) >= minimo else "Muito curto."
+
+
+def erro_nascimento(d):
+    hoje = date.today()
+    idade = hoje.year - d.year - ((hoje.month, hoje.day) < (d.month, d.day))
+    return "" if 18 <= idade <= 90 else "O prestador precisa ter 18 anos ou mais."
+
+
+def erro_usuario(v):
+    v = str(v).strip()
+    if not v:
+        return "Campo obrigatório."
+    return "" if " " not in v else "Usuário não pode ter espaços."
+
+
+def titulo_nome(v):
+    """'maria  DA silva' -> 'Maria da Silva'."""
+    minusc = {"da", "de", "do", "das", "dos", "e"}
+    partes = " ".join(str(v).split()).lower().split(" ")
+    return " ".join(p if i and p in minusc else p.capitalize() for i, p in enumerate(partes))
+
+
+def formatar(chave, funcao):
+    """Callback de on_change: reformata o valor digitado (ex.: telefone vira (31) 99999-9999)."""
+    def _f():
+        st.session_state[chave] = funcao(st.session_state.get(chave, ""))
+    return _f
+
+
+def campo_celular(col, chave, erro=None):
+    """Celular com bandeira do Brasil e máscara (99) 99999-9999."""
+    with col:
+        html('<div class="cel-rotulo">Celular (WhatsApp) *</div><div class="cel-ajuda">Para contato via WhatsApp</div>')
+        a, b = st.container(key=f"celwrap_{chave}").columns([1, 5], gap="small", vertical_alignment="center")
+        a.markdown('<div class="cel-ddi" title="Brasil (+55)">🇧🇷</div>', unsafe_allow_html=True)
+        valor = b.text_input("Celular (WhatsApp)", key=chave, placeholder="(99) 99999-9999",
+                             label_visibility="collapsed", on_change=formatar(chave, fmt_tel))
+        mostrar_erro(col, erro)
+    return valor
+
+
+def mostrar_erro(col, msg):
+    if msg:
+        col.markdown(f'<div class="erro-campo">⚠️ {esc(msg)}</div>', unsafe_allow_html=True)
+
+
 def cnpj_valido(cnpj):
     c = so_digitos(cnpj)
     if len(c) != 14 or len(set(c)) == 1:
@@ -549,6 +684,14 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .passo {padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
         background: #F3F4F6; color: #4B5563; border: 1px solid #E5E7EB;}
 .passo.ok {background: #DCFCE7; color: #166534; border-color: #BBF7D0;}
+[class*="st-key-celwrap"] [data-testid="stHorizontalBlock"] {flex-wrap: nowrap; gap: 8px;}
+[class*="st-key-celwrap"] [data-testid="stColumn"]:first-child {flex: 0 0 56px !important; min-width: 56px !important;}
+[class*="st-key-celwrap"] [data-testid="stColumn"]:last-child {flex: 1 1 auto !important; min-width: 0 !important;}
+.cel-rotulo {font-size: .875rem; color: #1F2937; margin-bottom: 2px;}
+.cel-ajuda {font-size: .8rem; color: #6B7280; margin-bottom: 6px;}
+.cel-ddi {background: #EEF0F7; border-radius: 8px; height: 2.5rem; display: flex; align-items: center;
+          justify-content: center; font-size: 1.3rem; margin-bottom: 1rem;}
+.erro-campo {color: #B91C1C; font-size: .8rem; margin: -10px 0 8px;}
 .campos {display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: .9rem; margin-bottom: 8px;}
 .campos .k {color: #6B7280;}
 .campos .v {color: #111827; word-break: break-word;}
@@ -760,7 +903,7 @@ def tela_candidato():
         formulario_candidato(r)
 
 
-def campos_endereco(r, k):
+def campos_endereco(r, k, erros=None):
     """Campos de endereço. Ao informar o CEP (Enter ou sair do campo), preenche estado, cidade, bairro e rua."""
     campos = ["cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento"]
     for c in campos:  # valores iniciais vêm do cadastro; depois o session_state manda
@@ -781,20 +924,28 @@ def campos_endereco(r, k):
     if r["endereco"] and not r["logradouro"]:
         st.caption(f"Endereço informado antes: {r['endereco']}")
     c1, c2, c3 = st.columns([1, 1, 2])
+    erros = erros or {}
     c1.text_input("CEP *", key=k("cep"), placeholder="00000-000", on_change=ao_mudar_cep,
                   help="Digite o CEP e aperte Enter: estado, cidade, bairro e rua são preenchidos sozinhos.")
-    c2.selectbox("Estado *", UFS, key=k("uf"))
+    c2.selectbox("Estado *", UFS, key=k("uf"), placeholder="Selecione", format_func=lambda u: u or "Selecione")
     c3.text_input("Cidade *", key=k("cidade"))
     msg = st.session_state.get(k("cep_msg"))
     if msg == "ok":
         c1.caption("✅ Endereço encontrado")
     elif msg == "erro":
         c1.caption("⚠️ CEP não encontrado. Preencha à mão.")
+    mostrar_erro(c1, erros.get("cep"))
+    mostrar_erro(c2, erros.get("uf"))
+    mostrar_erro(c3, erros.get("cidade"))
     c1, c2 = st.columns([1, 2])
     c1.text_input("Bairro *", key=k("bairro"))
+    mostrar_erro(c1, erros.get("bairro"))
     c2.text_input("Endereço (rua, avenida...) *", key=k("logradouro"))
+    mostrar_erro(c2, erros.get("logradouro"))
     c1, c2 = st.columns([1, 2])
-    c1.text_input("Número *", key=k("numero"))
+    c1.text_input("Número *", key=k("numero"), placeholder="Ex.: 120 ou S/N",
+                  on_change=formatar(k("numero"), lambda v: "S/N" if re.fullmatch(r"(?i)\s*s/?n\s*", v) else v.strip()))
+    mostrar_erro(c1, erros.get("numero"))
     c2.text_input("Complemento", key=k("complemento"), placeholder="Apto, bloco, sala...")
     return {c: st.session_state[k(c)].strip() if isinstance(st.session_state[k(c)], str) else st.session_state[k(c)]
             for c in campos}
@@ -808,21 +959,36 @@ def formulario_candidato(r, prefixo="cand"):
         return f"{prefixo}_{nome}_{pid}"
 
     st.markdown("##### Dados pessoais")
+    iniciais = {"nome": r["nome_completo"] or r["nome"], "cpf": fmt_cpf(r["cpf"]), "rg": r["rg"],
+                "tel": fmt_tel(r["telefone"]), "email": r["email"]}
+    for c, v in iniciais.items():
+        st.session_state.setdefault(k(c), v)
+    erros = st.session_state.get(k("erros"), {})
+    # Uma linha de colunas por par de campos, para a ordem ficar certa no celular.
     c1, c2 = st.columns(2)
-    nome_completo = c1.text_input("Nome completo *", r["nome_completo"] or r["nome"], key=k("nome"))
-    cpf = c2.text_input("CPF *", r["cpf"], placeholder="000.000.000-00", key=k("cpf"))
-    rg = c1.text_input("RG *", r["rg"], key=k("rg"))
+    nome_completo = c1.text_input("Nome completo *", key=k("nome"))
+    mostrar_erro(c1, erros.get("nome"))
+    cpf = c2.text_input("CPF *", placeholder="000.000.000-00", key=k("cpf"), on_change=formatar(k("cpf"), fmt_cpf))
+    mostrar_erro(c2, erros.get("cpf"))
+    c1, c2 = st.columns(2)
+    rg = c1.text_input("RG *", key=k("rg"), placeholder="Ex.: MG-12.345.678")
+    mostrar_erro(c1, erros.get("rg"))
     try:
         dn_padrao = date.fromisoformat(r["data_nascimento"]) if r["data_nascimento"] else date(1990, 1, 1)
     except ValueError:
         dn_padrao = date(1990, 1, 1)
     nasc = c2.date_input("Data de nascimento *", dn_padrao, min_value=date(1940, 1, 1),
                          max_value=date.today(), format="DD/MM/YYYY", key=k("nasc"))
-    telefone = c1.text_input("Telefone *", r["telefone"], key=k("tel"))
-    email = c2.text_input("E-mail *", r["email"], key=k("email"))
+    mostrar_erro(c2, erros.get("nasc"))
+    c1, c2 = st.columns(2)
+    telefone = campo_celular(c1, k("tel"), erros.get("tel"))
+    email = c2.text_input("E-mail *", key=k("email"), placeholder="nome@email.com",
+                          on_change=formatar(k("email"), lambda v: v.strip().lower()))
+    mostrar_erro(c2, erros.get("email"))
     ec_idx = ESTADOS_CIVIS.index(r["estado_civil"]) if r["estado_civil"] in ESTADOS_CIVIS else 0
+    c1, _ = st.columns(2)
     estado_civil = c1.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx, key=k("ec"))
-    end = campos_endereco(r, k)
+    end = campos_endereco(r, k, erros)
 
     st.markdown("##### Pessoa jurídica")
     possui = st.radio("Já possui CNPJ?", ["Sim", "Não"], horizontal=True,
@@ -836,7 +1002,9 @@ def formulario_candidato(r, prefixo="cand"):
         st.info((AVISO_COM_MEI if aceita_mei(r["vaga"]) else AVISO_SEM_MEI) + ORIENTACOES_SEM_CNPJ)
         cnpj_info = {"possui_cnpj": "Não", "cnpj_apto": ""}
     else:
-        cnpj = st.text_input("CNPJ *", fmt_cnpj(r["cnpj"]), placeholder="00.000.000/0000-00", key=k("cnpj"))
+        st.session_state.setdefault(k("cnpj"), fmt_cnpj(r["cnpj"]))
+        cnpj = st.text_input("CNPJ *", placeholder="00.000.000/0000-00", key=k("cnpj"),
+                             on_change=formatar(k("cnpj"), fmt_cnpj))
         chave = f"cnpj_res_{pid}"
         if st.button("🔎 Validar CNPJ", key=k("validar")):
             if not cnpj_valido(cnpj):
@@ -922,26 +1090,35 @@ def formulario_candidato(r, prefixo="cand"):
     rotulo = "Enviar dados e documentos" if apto else "Enviar dados pessoais"
     if prefixo != "cand":
         rotulo = "Salvar Etapa 2"
+    for e in st.session_state.get(k("erros_gerais"), []):
+        st.error(e)
     if st.button(rotulo, type="primary", key=k("enviar")):
-        erros = []
-        if not all([nome_completo.strip(), rg.strip(), telefone.strip(), email.strip()]):
-            erros.append("Preencha todos os campos obrigatórios (*).")
-        if len(so_digitos(end["cep"])) != 8 or not all(end[x] for x in ("uf", "cidade", "bairro", "logradouro", "numero")):
-            erros.append("Preencha o endereço completo: CEP, estado, cidade, bairro, endereço e número.")
-        if not cpf_valido(cpf):
-            erros.append("CPF inválido.")
+        por_campo = {
+            "nome": erro_nome(nome_completo), "cpf": erro_cpf(cpf), "rg": erro_rg(rg),
+            "nasc": erro_nascimento(nasc), "tel": erro_tel(telefone), "email": erro_email(email),
+            "cep": erro_cep(end["cep"]), "uf": "" if end["uf"] else "Selecione o estado.",
+            "cidade": erro_texto(end["cidade"]), "bairro": erro_texto(end["bairro"]),
+            "logradouro": erro_texto(end["logradouro"], 3), "numero": erro_numero(end["numero"]),
+        }
+        por_campo = {c: m for c, m in por_campo.items() if m}
+        gerais = []
         if possui == "Sim" and not cnpj_info:
-            erros.append("Valide o CNPJ antes de enviar.")
+            gerais.append("Valide o CNPJ antes de enviar.")
         if apto and arquivo is None and not r["cartao_cnpj"]:
-            erros.append("Anexe o Cartão CNPJ.")
-        if erros:
-            for e in erros:
-                st.error(e)
-            return
+            gerais.append("Anexe o Cartão CNPJ.")
+        if por_campo:
+            gerais.insert(0, "Corrija o campo marcado em vermelho." if len(por_campo) == 1
+                          else f"Corrija os {len(por_campo)} campos marcados em vermelho.")
+        if por_campo or gerais:
+            # rerun para os avisos aparecerem embaixo de cada campo
+            st.session_state[k("erros")], st.session_state[k("erros_gerais")] = por_campo, gerais
+            st.rerun()
+        st.session_state.pop(k("erros"), None)
+        st.session_state.pop(k("erros_gerais"), None)
 
         campos = dict(
-            nome_completo=nome_completo.strip(), cpf=so_digitos(cpf), rg=rg.strip(),
-            data_nascimento=nasc.isoformat(), telefone=telefone.strip(), email=email.strip().lower(),
+            nome_completo=titulo_nome(nome_completo), cpf=so_digitos(cpf), rg=rg.strip().upper(),
+            data_nascimento=nasc.isoformat(), telefone=fmt_tel(telefone), email=email.strip().lower(),
             estado_civil=estado_civil, endereco=montar_endereco(end), form_enviado_em=agora(), **end, **cnpj_info,
         )
         if arquivo is not None:
@@ -1083,29 +1260,57 @@ def quadro_kanban():
                 card_prestador(r.to_dict())
 
 
+NOVO_CAMPOS = ["nc_nome", "nc_email", "nc_tel", "nc_vaga", "nc_status"]
+
+
+def cadastrar_candidato():
+    """Callback do botão Cadastrar: valida, grava e limpa o formulário."""
+    ss = st.session_state
+    erros = {
+        "nc_nome": erro_nome(ss.get("nc_nome", "")),
+        "nc_email": erro_email(ss.get("nc_email", "")),
+        "nc_tel": erro_tel(ss.get("nc_tel", "")),
+        "nc_vaga": "" if ss.get("nc_vaga") else "Selecione a vaga.",
+    }
+    email = ss.get("nc_email", "").strip().lower()
+    if not erros["nc_email"] and (carregar()["email"] == email).any():
+        erros["nc_email"] = "Já existe um candidato com esse e-mail."
+    ss["nc_erros"] = {c: m for c, m in erros.items() if m}
+    if ss["nc_erros"]:
+        return
+    nome = titulo_nome(ss["nc_nome"])
+    novo = criar(nome, email, fmt_tel(ss["nc_tel"]), ss["nc_vaga"], ss.get("nc_status") or STATUS_ENTREVISTA[0])
+    cv = ss.get(f"nc_cv_{ss.get('nc_versao', 0)}")
+    if cv is not None:
+        atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
+    for c in NOVO_CAMPOS:
+        ss.pop(c, None)
+    ss["nc_versao"] = ss.get("nc_versao", 0) + 1  # troca a chave do upload para limpá-lo
+    ss["nc_ok"] = novo
+
+
 def novo_candidato():
     _, meio, _ = st.columns([1, 3, 1])
-    with meio, st.form("novo_cand", clear_on_submit=True):
+    ss = st.session_state
+    erros = ss.get("nc_erros", {})
+    with meio, st.container(border=True):
         st.markdown("##### Cadastrar candidato")
+        novo = ss.pop("nc_ok", None)
+        if novo:
+            st.success(f"Cadastro feito: {novo['nome']}. Código de acesso: **{novo['codigo_acesso']}**")
         c1, c2 = st.columns(2)
-        nome = c1.text_input("Nome *")
-        email = c2.text_input("E-mail *")
-        tel = c1.text_input("Telefone *")
-        vaga = c2.selectbox("Vaga / Cargo *", VAGAS, index=None, placeholder="Selecione a vaga")
-        status = st.selectbox("Status da entrevista", STATUS_ENTREVISTA)
-        cv = st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"])
-        if st.form_submit_button("Cadastrar", type="primary", width="stretch"):
-            if not all([nome.strip(), email.strip(), tel.strip(), vaga]):
-                st.error("Preencha todos os campos.")
-            elif "@" not in email:
-                st.error("E-mail inválido.")
-            elif (carregar()["email"] == email.strip().lower()).any():
-                st.error("Já existe um candidato com esse e-mail.")
-            else:
-                novo = criar(nome, email, tel, vaga, status)
-                if cv is not None:
-                    atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
-                st.success(f"{novo['nome']} cadastrado. Código de acesso: **{novo['codigo_acesso']}**")
+        c1.text_input("Nome *", key="nc_nome", placeholder="Nome e sobrenome")
+        mostrar_erro(c1, erros.get("nc_nome"))
+        c2.text_input("E-mail *", key="nc_email", placeholder="nome@email.com",
+                      on_change=formatar("nc_email", lambda v: v.strip().lower()))
+        mostrar_erro(c2, erros.get("nc_email"))
+        campo_celular(c1, "nc_tel", erros.get("nc_tel"))
+        c2.selectbox("Vaga / Cargo *", VAGAS, index=None, placeholder="Selecione a vaga", key="nc_vaga")
+        mostrar_erro(c2, erros.get("nc_vaga"))
+        st.selectbox("Status da entrevista", STATUS_ENTREVISTA, key="nc_status")
+        st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"],
+                         key=f"nc_cv_{ss.get('nc_versao', 0)}")
+        st.button("Cadastrar", type="primary", width="stretch", on_click=cadastrar_candidato)
 
 
 def base_completa():
@@ -1595,12 +1800,14 @@ def aba_acessos(r):
         usuario = c2.text_input(rotulo_usuario, r[f"{campo}_usuario"], placeholder=exemplo,
                                 key=f"{campo}_usuario_{r['id']}").strip()
         liberado = liberado or bool(usuario)  # informar o usuário já marca o acesso como liberado
-        if liberado and not usuario:
-            faltando.append(rotulo_usuario)
+        msg = (erro_email(usuario) if campo == "ti_email" else erro_usuario(usuario)) if liberado else ""
+        if msg:
+            faltando.append(f"{rotulo_usuario}: {msg}")
         campos[campo], campos[f"{campo}_usuario"] = sn(liberado), usuario
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
         if faltando:
-            st.error("Informe o usuário de: " + ", ".join(faltando) + ".")
+            for f in faltando:
+                st.error(f)
             return
         atualizar(r["id"], **campos)
         avisar("Acessos salvos." + ir_para_proxima(r["id"], 4, True))
@@ -1632,6 +1839,9 @@ def aba_integracao(r):
     data_int = c1.date_input("Data da reunião de integração", di, format="DD/MM/YYYY", key=f"di_{r['id']}")
     padrinho = c2.text_input("Padrinho responsável pelo primeiro mês *", r["padrinho"], key=f"pad_{r['id']}")
     if st.button("Salvar integração", key=f"salva_onb_{r['id']}", type="primary"):
+        if padrinho.strip() and erro_nome(padrinho, completo=False):
+            st.error("Padrinho: " + erro_nome(padrinho, completo=False))
+            return
         atualizar(r["id"], data_integracao=data_int.isoformat(), padrinho=padrinho.strip(),
                   **{k: sn(v) for k, v in marcados.items()})
         avisar("Integração salva." + ir_para_proxima(r["id"], 5, True))
