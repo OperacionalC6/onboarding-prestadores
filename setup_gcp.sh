@@ -21,7 +21,15 @@ main() {
   BUCKET="onboarding-anexos-$PROJ"
 
   echo "== Ativando as APIs (pode levar 1 minuto) =="
-  gcloud services enable firestore.googleapis.com storage.googleapis.com iam.googleapis.com || exit 1
+  # Projeto novo às vezes responde "Quota exceeded" (limite por minuto): espera e tenta de novo.
+  for tentativa in 1 2 3 4 5 6; do
+    gcloud services enable firestore.googleapis.com storage.googleapis.com iam.googleapis.com 2>/tmp/enable.err && break
+    if [ "$tentativa" = 6 ] || ! grep -q "429\|RATE_LIMIT\|Quota exceeded" /tmp/enable.err; then
+      cat /tmp/enable.err; exit 1
+    fi
+    echo "Google pediu para aguardar (limite por minuto). Tentando de novo em 60s... ($tentativa/5)"
+    sleep 60
+  done
 
   echo "== Banco Firestore (São Paulo) =="
   if gcloud firestore databases describe --database="(default)" >/dev/null 2>&1; then
