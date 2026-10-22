@@ -13,6 +13,9 @@ App Streamlit (arquivo único) que conduz o prestador pelas 7 etapas:
 
 Armazenamento:
   * Sem configuração nenhuma, grava em CSV local (data/prestadores.csv).
+  * Se existir [gcp_service_account] e [armazenamento] com firestore = true em st.secrets, grava no Firestore
+    (um documento por prestador, coleção "prestadores"). Com gcs_bucket, os anexos vão para esse bucket do
+    Cloud Storage.
   * Se existir [gcp_service_account] e sheet_url em st.secrets, grava no Google Sheets.
   * Se existir drive_folder_id, os cartões CNPJ vão para uma pasta do Google Drive.
 
@@ -122,10 +125,71 @@ def fmt_cnpj(c):
 
 
 # =============================================================================
-# ARMAZENAMENTO (CSV local ou Google Sheets, troca transparente)
+# ARMAZENAMENTO (CSV local, Firestore ou Google Sheets, troca transparente)
 # =============================================================================
+def cfg_gcp(chave, padrao=None):
+    """Configuração da seção [armazenamento] dos secrets."""
+    try:
+        return (secret("armazenamento") or {}).get(chave, padrao)
+    except Exception:
+        return padrao
+
+
+def usa_firestore():
+    return bool(secret("gcp_service_account")) and bool(cfg_gcp("firestore"))
+
+
+def usa_gcs():
+    return bool(secret("gcp_service_account")) and bool(cfg_gcp("gcs_bucket"))
+
+
 def usa_sheets():
-    return bool(secret("gcp_service_account")) and bool(secret("sheet_url"))
+    return not usa_firestore() and bool(secret("gcp_service_account")) and bool(secret("sheet_url"))
+
+
+def nome_armazenamento():
+    banco = ("Firestore (GCP)" if usa_firestore() else "Google Sheets" if usa_sheets() else "CSV local (demonstração)")
+    anexos = ("Cloud Storage" if usa_gcs() else "Google Drive" if secret("drive_folder_id") else "disco local")
+    return f"Dados: {banco} · Anexos: {anexos}"
+
+
+@st.cache_resource(show_spinner=False)
+def _sessao_gcp():
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.service_account import Credentials
+
+    creds = Credentials.from_service_account_info(dict(secret("gcp_service_account")),
+                                                  scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    return AuthorizedSession(creds)
+
+
+def _url_firestore(doc=""):
+    projeto = cfg_gcp("projeto") or dict(secret("gcp_service_account"))["project_id"]
+    base = f"https://firestore.googleapis.com/v1/projects/{projeto}/databases/(default)/documents/"
+    return base + cfg_gcp("colecao", "prestadores") + (f"/{doc}" if doc else "")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _ler_firestore():
+    linhas, token = [], None
+    while True:
+        params = {"pageSize": 300, **({"pageToken": token} if token else {})}
+        r = _sessao_gcp().get(_url_firestore(), params=params, timeout=30)
+        r.raise_for_status()
+        dados = r.json()
+        for d in dados.get("documents", []):
+            linhas.append({k: v.get("stringValue", "") for k, v in d.get("fields", {}).items()})
+        token = dados.get("nextPageToken")
+        if not token:
+            break
+    return pd.DataFrame(linhas, columns=COLUNAS) if linhas else pd.DataFrame(columns=COLUNAS)
+
+
+def _gravar_firestore(linha):
+    corpo = {"fields": {c: {"stringValue": str(linha.get(c, "") or "")} for c in COLUNAS}}
+    r = _sessao_gcp().patch(_url_firestore(linha["id"]), json=corpo, timeout=30)
+    r.raise_for_status()
+    _ler_firestore.clear()
 
 
 @st.cache_resource(show_spinner=False)
@@ -151,7 +215,9 @@ def _ler_sheets():
 
 
 def carregar():
-    if usa_sheets():
+    if usa_firestore():
+        df = _ler_firestore().copy()
+    elif usa_sheets():
         df = _ler_sheets().copy()
     elif CSV_PATH.exists():
         df = pd.read_csv(CSV_PATH, dtype=str, keep_default_na=False)
@@ -190,7 +256,10 @@ def atualizar(pid, **campos):
     for k, v in campos.items():
         df.loc[idx, k] = "" if v is None else str(v)
     df.loc[idx, "atualizado_em"] = agora()
-    salvar(df)
+    if usa_firestore():  # grava só o documento do prestador
+        _gravar_firestore(df.loc[idx[0]].to_dict())
+    else:
+        salvar(df)
 
 
 def criar(nome, email, telefone, vaga, status):
@@ -203,6 +272,9 @@ def criar(nome, email, telefone, vaga, status):
         nome=nome.strip(), email=email.strip().lower(), telefone=telefone.strip(),
         vaga=vaga.strip(), status_entrevista=status,
     )
+    if usa_firestore():
+        _gravar_firestore(novo)
+        return novo
     df = pd.concat([df, pd.DataFrame([novo])], ignore_index=True)
     salvar(df)
     return novo
@@ -212,6 +284,12 @@ def guardar_arquivo(pid, arquivo):
     """Salva um anexo (cartão CNPJ, currículo, contrato) no Google Drive (se configurado) ou em disco local."""
     nome = f"{pid}_{re.sub(r'[^A-Za-z0-9._-]', '_', arquivo.name)}"
     conteudo = arquivo.getvalue()
+    if usa_gcs():
+        try:
+            gravar_gcs(nome, conteudo, arquivo.type)
+            return f"gcs:{nome}"
+        except Exception as e:
+            st.warning(f"Não foi possível enviar ao Cloud Storage ({e}). Arquivo salvo localmente.")
     pasta = secret("drive_folder_id")
     if pasta and secret("gcp_service_account"):
         try:
@@ -242,6 +320,43 @@ def guardar_arquivo(pid, arquivo):
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     (UPLOAD_DIR / nome).write_bytes(conteudo)
     return f"local:{nome}"
+
+
+def _url_gcs(nome="", upload=False):
+    from urllib.parse import quote
+
+    base = "https://storage.googleapis.com/" + ("upload/" if upload else "") + f"storage/v1/b/{cfg_gcp('gcs_bucket')}/o"
+    return base if upload or not nome else f"{base}/{quote('anexos/' + nome, safe='')}"
+
+
+def gravar_gcs(nome, conteudo, tipo=None):
+    r = _sessao_gcp().post(_url_gcs(upload=True), params={"uploadType": "media", "name": "anexos/" + nome},
+                           data=conteudo, headers={"Content-Type": tipo or "application/octet-stream"}, timeout=120)
+    r.raise_for_status()
+
+
+def listar_gcs(prefixo):
+    r = _sessao_gcp().get(_url_gcs(), params={"prefix": "anexos/" + prefixo}, timeout=30)
+    r.raise_for_status()
+    return sorted(o["name"][len("anexos/"):] for o in r.json().get("items", []))
+
+
+def apagar_gcs(nome):
+    _sessao_gcp().delete(_url_gcs(nome), timeout=30)
+
+
+def ler_arquivo(valor):
+    """Conteúdo de um anexo gravado (gcs: ou local:) como (nome, bytes), ou None se não estiver disponível."""
+    try:
+        if valor.startswith("gcs:"):
+            r = _sessao_gcp().get(_url_gcs(valor[4:]), params={"alt": "media"}, timeout=60)
+            return (valor[4:], r.content) if r.ok else None
+        if valor.startswith("local:"):
+            caminho = UPLOAD_DIR / valor[6:]
+            return (caminho.name, caminho.read_bytes()) if caminho.exists() else None
+    except Exception:
+        return None
+    return None
 
 
 # =============================================================================
@@ -1422,17 +1537,13 @@ def base_completa():
                        "prestadores.csv", "text/csv")
 
 
-def caminho_local(valor):
-    return UPLOAD_DIR / valor[6:] if valor.startswith("local:") else None
-
-
 def mostrar_arquivo(valor, rotulo, key):
     if not valor:
         st.caption(f"{rotulo}: não anexado")
-    elif valor.startswith("local:"):
-        caminho = UPLOAD_DIR / valor[6:]
-        if caminho.exists():
-            st.download_button(f"📎 Baixar {rotulo}", caminho.read_bytes(), caminho.name, key=key)
+    elif valor.startswith(("local:", "gcs:")):
+        arq = ler_arquivo(valor)
+        if arq:
+            st.download_button(f"📎 Baixar {rotulo}", arq[1], arq[0], key=key)
         else:
             st.warning(f"{rotulo}: arquivo não encontrado (o servidor pode ter sido reiniciado). Anexe de novo.")
     else:
@@ -1739,10 +1850,10 @@ def avaliacao_candidato(r):
         avisar("Avaliação salva." + ir_para_proxima(r["id"], 0, False))
         st.rerun()
     mostrar_arquivo(r["avaliacao"], "Avaliação completa", key=f"dl_av_{r['id']}")
-    local = caminho_local(r["avaliacao"])
-    if local and local.suffix == ".md" and local.exists():
+    arq = ler_arquivo(r["avaliacao"]) if r["avaliacao"].endswith(".md") else None
+    if arq:
         with st.expander("Ler avaliação completa"):
-            st.markdown(local.read_text(encoding="utf-8", errors="ignore"))
+            st.markdown(arq[1].decode("utf-8", errors="ignore"))
 
 
 def aba_formalizacao(r):
@@ -1987,18 +2098,29 @@ def comparativo():
 
     st.markdown("##### Comparativo detalhado")
     base = f"comparativo_{slug(vaga)}"
-    existentes = sorted(UPLOAD_DIR.glob(base + ".*")) if UPLOAD_DIR.exists() else []
-    if existentes:
-        arq = existentes[-1]
-        st.download_button(f"📎 Baixar {arq.name}", arq.read_bytes(), arq.name, key="dl_comp")
+    if usa_gcs():
         try:
-            if arq.suffix == ".xlsx":
-                st.dataframe(pd.read_excel(arq), hide_index=True, width="stretch")
-            elif arq.suffix == ".csv":
-                st.dataframe(pd.read_csv(arq), hide_index=True, width="stretch")
-            elif arq.suffix == ".md":
+            existentes = [n for n in listar_gcs(base + ".")]
+        except Exception:
+            existentes = []
+        prefixo = "gcs:"
+    else:
+        existentes = [p.name for p in sorted(UPLOAD_DIR.glob(base + ".*"))] if UPLOAD_DIR.exists() else []
+        prefixo = "local:"
+    arq = ler_arquivo(prefixo + existentes[-1]) if existentes else None
+    if arq:
+        nome_arq, conteudo = arq
+        st.download_button(f"📎 Baixar {nome_arq}", conteudo, nome_arq, key="dl_comp")
+        try:
+            from io import BytesIO
+
+            if nome_arq.endswith(".xlsx"):
+                st.dataframe(pd.read_excel(BytesIO(conteudo)), hide_index=True, width="stretch")
+            elif nome_arq.endswith(".csv"):
+                st.dataframe(pd.read_csv(BytesIO(conteudo)), hide_index=True, width="stretch")
+            elif nome_arq.endswith(".md"):
                 with st.expander("Ler comparativo", expanded=True):
-                    st.markdown(arq.read_text(encoding="utf-8", errors="ignore"))
+                    st.markdown(conteudo.decode("utf-8", errors="ignore"))
         except Exception as e:
             st.warning(f"Não consegui exibir o arquivo ({e}). Use o botão de download.")
     else:
@@ -2006,10 +2128,16 @@ def comparativo():
     novo = st.file_uploader("Anexar ou trocar comparativo (.xlsx, .csv ou .md)", type=["xlsx", "csv", "md"],
                             key=f"up_comp_{slug(vaga)}")
     if novo is not None and st.button("Salvar comparativo", key="salva_comp"):
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        for antigo in existentes:
-            antigo.unlink()
-        (UPLOAD_DIR / (base + Path(novo.name).suffix.lower())).write_bytes(novo.getvalue())
+        nome_novo = base + Path(novo.name).suffix.lower()
+        if usa_gcs():
+            for antigo in existentes:
+                apagar_gcs(antigo)
+            gravar_gcs(nome_novo, novo.getvalue(), novo.type)
+        else:
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            for antigo in existentes:
+                (UPLOAD_DIR / antigo).unlink(missing_ok=True)
+            (UPLOAD_DIR / nome_novo).write_bytes(novo.getvalue())
         avisar("Comparativo salvo.")
         st.rerun()
 
@@ -2041,7 +2169,7 @@ else:
             html('<div class="marca">🤝 Onboarding</div>')
             menu_rh()
             st.divider()
-            st.caption("Armazenamento: " + ("Google Sheets ✅" if usa_sheets() else "CSV local (demonstração)"))
+            st.caption(nome_armazenamento())
             if st.button("↩ Sair do painel RH", key="sair_rh", width="stretch", type="tertiary"):
                 for chave in ("rh_ok", "ficha"):
                     st.session_state.pop(chave, None)
