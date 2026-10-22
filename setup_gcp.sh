@@ -38,15 +38,14 @@ main() {
     gcloud firestore databases create --location=southamerica-east1 --type=firestore-native || exit 1
   fi
 
-  echo "== Bucket de anexos =="
+  echo "== Bucket de anexos (opcional) =="
+  # O Cloud Storage exige faturamento (cartão). Sem ele, os anexos ficam no próprio Firestore.
   if gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
     echo "Já existe, mantendo."
   elif ! gcloud storage buckets create "gs://$BUCKET" --location=us-east1 --uniform-bucket-level-access \
-         --public-access-prevention; then
-    echo ""
-    echo ">> Não consegui criar o bucket. Normalmente é porque o projeto está sem faturamento (cartão)."
-    echo ">> Ative em https://console.cloud.google.com/billing/linkedaccount?project=$PROJ e rode de novo."
-    exit 1
+         --public-access-prevention >/dev/null 2>&1; then
+    echo "Projeto sem faturamento: os anexos vão ficar no Firestore (sem custo e sem cartão)."
+    BUCKET=""
   fi
 
   echo "== Conta de serviço do app =="
@@ -55,8 +54,10 @@ main() {
   sleep 5
   gcloud projects add-iam-policy-binding "$PROJ" --member="serviceAccount:$SA" --role=roles/datastore.user \
     --condition=None -q >/dev/null || exit 1
-  gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" \
-    --role=roles/storage.objectAdmin >/dev/null || exit 1
+  if [ -n "$BUCKET" ]; then
+    gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" \
+      --role=roles/storage.objectAdmin >/dev/null || exit 1
+  fi
 
   CHAVE=$(mktemp)
   if ! gcloud iam service-accounts keys create "$CHAVE" --iam-account="$SA"; then
@@ -72,7 +73,8 @@ import json, sys
 chave, bucket = json.load(open(sys.argv[1])), sys.argv[2]
 print("[armazenamento]")
 print("firestore = true")
-print(f"gcs_bucket = \"{bucket}\"")
+if bucket:
+    print(f"gcs_bucket = \"{bucket}\"")
 print()
 print("[gcp_service_account]")
 for k, v in chave.items():

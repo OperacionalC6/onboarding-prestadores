@@ -15,7 +15,7 @@ Armazenamento:
   * Sem configuração nenhuma, grava em CSV local (data/prestadores.csv).
   * Se existir [gcp_service_account] e [armazenamento] com firestore = true em st.secrets, grava no Firestore
     (um documento por prestador, coleção "prestadores"). Com gcs_bucket, os anexos vão para esse bucket do
-    Cloud Storage.
+    Cloud Storage; sem bucket, ficam no próprio Firestore (coleção "anexos", em partes de até 900 KB).
   * Se existir [gcp_service_account] e sheet_url em st.secrets, grava no Google Sheets.
   * Se existir drive_folder_id, os cartões CNPJ vão para uma pasta do Google Drive.
 
@@ -143,13 +143,19 @@ def usa_gcs():
     return bool(secret("gcp_service_account")) and bool(cfg_gcp("gcs_bucket"))
 
 
+def nuvem():
+    """Onde os anexos ficam: "gcs" (bucket), "fs" (Firestore, sem precisar de cartão) ou None (disco/Drive)."""
+    return "gcs" if usa_gcs() else "fs" if usa_firestore() else None
+
+
 def usa_sheets():
     return not usa_firestore() and bool(secret("gcp_service_account")) and bool(secret("sheet_url"))
 
 
 def nome_armazenamento():
     banco = ("Firestore (GCP)" if usa_firestore() else "Google Sheets" if usa_sheets() else "CSV local (demonstração)")
-    anexos = ("Cloud Storage" if usa_gcs() else "Google Drive" if secret("drive_folder_id") else "disco local")
+    anexos = {"gcs": "Cloud Storage", "fs": "Firestore"}.get(nuvem()) or (
+        "Google Drive" if secret("drive_folder_id") else "disco local")
     return f"Dados: {banco} · Anexos: {anexos}"
 
 
@@ -163,10 +169,10 @@ def _sessao_gcp():
     return AuthorizedSession(creds)
 
 
-def _url_firestore(doc=""):
+def _url_firestore(doc="", colecao=None):
     projeto = cfg_gcp("projeto") or dict(secret("gcp_service_account"))["project_id"]
     base = f"https://firestore.googleapis.com/v1/projects/{projeto}/databases/(default)/documents/"
-    return base + cfg_gcp("colecao", "prestadores") + (f"/{doc}" if doc else "")
+    return base + (colecao or cfg_gcp("colecao", "prestadores")) + (f"/{doc}" if doc else "")
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -284,12 +290,12 @@ def guardar_arquivo(pid, arquivo):
     """Salva um anexo (cartão CNPJ, currículo, contrato) no Google Drive (se configurado) ou em disco local."""
     nome = f"{pid}_{re.sub(r'[^A-Za-z0-9._-]', '_', arquivo.name)}"
     conteudo = arquivo.getvalue()
-    if usa_gcs():
+    if nuvem():
         try:
-            gravar_gcs(nome, conteudo, arquivo.type)
-            return f"gcs:{nome}"
+            gravar_nuvem(nome, conteudo, arquivo.type)
+            return f"{nuvem()}:{nome}"
         except Exception as e:
-            st.warning(f"Não foi possível enviar ao Cloud Storage ({e}). Arquivo salvo localmente.")
+            st.warning(f"Não foi possível guardar o anexo na nuvem ({e}). Arquivo salvo localmente.")
     pasta = secret("drive_folder_id")
     if pasta and secret("gcp_service_account"):
         try:
@@ -329,28 +335,85 @@ def _url_gcs(nome="", upload=False):
     return base if upload or not nome else f"{base}/{quote('anexos/' + nome, safe='')}"
 
 
-def gravar_gcs(nome, conteudo, tipo=None):
-    r = _sessao_gcp().post(_url_gcs(upload=True), params={"uploadType": "media", "name": "anexos/" + nome},
-                           data=conteudo, headers={"Content-Type": tipo or "application/octet-stream"}, timeout=120)
-    r.raise_for_status()
+PARTE_FS = 900_000  # bytes por documento (o Firestore aceita até 1 MiB)
 
 
-def listar_gcs(prefixo):
-    r = _sessao_gcp().get(_url_gcs(), params={"prefix": "anexos/" + prefixo}, timeout=30)
-    r.raise_for_status()
-    return sorted(o["name"][len("anexos/"):] for o in r.json().get("items", []))
+def _parte_fs(nome, i):
+    return nome if i == 0 else f"{nome}__p{i}"
 
 
-def apagar_gcs(nome):
-    _sessao_gcp().delete(_url_gcs(nome), timeout=30)
+def gravar_nuvem(nome, conteudo, tipo=None):
+    if nuvem() == "gcs":
+        r = _sessao_gcp().post(_url_gcs(upload=True), params={"uploadType": "media", "name": "anexos/" + nome},
+                               data=conteudo, headers={"Content-Type": tipo or "application/octet-stream"},
+                               timeout=120)
+        r.raise_for_status()
+        return
+    import base64
+
+    partes = [conteudo[i:i + PARTE_FS] for i in range(0, len(conteudo), PARTE_FS)] or [b""]
+    for i, pedaco in enumerate(partes):
+        campos = {"dados": {"bytesValue": base64.b64encode(pedaco).decode()}}
+        if i == 0:
+            campos.update(nome={"stringValue": nome}, tipo={"stringValue": tipo or ""},
+                          partes={"integerValue": str(len(partes))})
+        r = _sessao_gcp().patch(_url_firestore(_parte_fs(nome, i), "anexos"), json={"fields": campos}, timeout=60)
+        r.raise_for_status()
+
+
+def listar_nuvem(prefixo):
+    if nuvem() == "gcs":
+        r = _sessao_gcp().get(_url_gcs(), params={"prefix": "anexos/" + prefixo}, timeout=30)
+        r.raise_for_status()
+        return sorted(o["name"][len("anexos/"):] for o in r.json().get("items", []))
+    nomes, token = [], None
+    while True:
+        params = {"pageSize": 300, "mask.fieldPaths": "nome", **({"pageToken": token} if token else {})}
+        r = _sessao_gcp().get(_url_firestore(colecao="anexos"), params=params, timeout=30)
+        r.raise_for_status()
+        dados = r.json()
+        nomes += [d["name"].rsplit("/", 1)[1] for d in dados.get("documents", [])]
+        token = dados.get("nextPageToken")
+        if not token:
+            break
+    return sorted(n for n in nomes if n.startswith(prefixo) and "__p" not in n)
+
+
+def apagar_nuvem(nome):
+    if nuvem() == "gcs":
+        _sessao_gcp().delete(_url_gcs(nome), timeout=30)
+        return
+    r = _sessao_gcp().get(_url_firestore(nome, "anexos"), params={"mask.fieldPaths": "partes"}, timeout=30)
+    total = int(r.json().get("fields", {}).get("partes", {}).get("integerValue", 1)) if r.ok else 1
+    for i in range(total):
+        _sessao_gcp().delete(_url_firestore(_parte_fs(nome, i), "anexos"), timeout=30)
+
+
+def _ler_fs(nome):
+    import base64
+
+    pedacos, total, i = [], 1, 0
+    while i < total:
+        r = _sessao_gcp().get(_url_firestore(_parte_fs(nome, i), "anexos"), timeout=60)
+        if not r.ok:
+            return None
+        campos = r.json().get("fields", {})
+        if i == 0:
+            total = int(campos.get("partes", {}).get("integerValue", 1))
+        pedacos.append(base64.b64decode(campos.get("dados", {}).get("bytesValue", "")))
+        i += 1
+    return b"".join(pedacos)
 
 
 def ler_arquivo(valor):
-    """Conteúdo de um anexo gravado (gcs: ou local:) como (nome, bytes), ou None se não estiver disponível."""
+    """Conteúdo de um anexo gravado (gcs:, fs: ou local:) como (nome, bytes), ou None se não estiver disponível."""
     try:
         if valor.startswith("gcs:"):
             r = _sessao_gcp().get(_url_gcs(valor[4:]), params={"alt": "media"}, timeout=60)
             return (valor[4:], r.content) if r.ok else None
+        if valor.startswith("fs:"):
+            conteudo = _ler_fs(valor[3:])
+            return (valor[3:], conteudo) if conteudo is not None else None
         if valor.startswith("local:"):
             caminho = UPLOAD_DIR / valor[6:]
             return (caminho.name, caminho.read_bytes()) if caminho.exists() else None
@@ -1540,7 +1603,7 @@ def base_completa():
 def mostrar_arquivo(valor, rotulo, key):
     if not valor:
         st.caption(f"{rotulo}: não anexado")
-    elif valor.startswith(("local:", "gcs:")):
+    elif valor.startswith(("local:", "gcs:", "fs:")):
         arq = ler_arquivo(valor)
         if arq:
             st.download_button(f"📎 Baixar {rotulo}", arq[1], arq[0], key=key)
@@ -2098,12 +2161,12 @@ def comparativo():
 
     st.markdown("##### Comparativo detalhado")
     base = f"comparativo_{slug(vaga)}"
-    if usa_gcs():
+    if nuvem():
         try:
-            existentes = [n for n in listar_gcs(base + ".")]
+            existentes = listar_nuvem(base + ".")
         except Exception:
             existentes = []
-        prefixo = "gcs:"
+        prefixo = nuvem() + ":"
     else:
         existentes = [p.name for p in sorted(UPLOAD_DIR.glob(base + ".*"))] if UPLOAD_DIR.exists() else []
         prefixo = "local:"
@@ -2129,10 +2192,10 @@ def comparativo():
                             key=f"up_comp_{slug(vaga)}")
     if novo is not None and st.button("Salvar comparativo", key="salva_comp"):
         nome_novo = base + Path(novo.name).suffix.lower()
-        if usa_gcs():
+        if nuvem():
             for antigo in existentes:
-                apagar_gcs(antigo)
-            gravar_gcs(nome_novo, novo.getvalue(), novo.type)
+                apagar_nuvem(antigo)
+            gravar_nuvem(nome_novo, novo.getvalue(), novo.type)
         else:
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             for antigo in existentes:
