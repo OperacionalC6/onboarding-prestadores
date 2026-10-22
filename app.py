@@ -684,6 +684,28 @@ h1, h2, h3 {letter-spacing: -0.01em;}
 .passo {padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
         background: #F3F4F6; color: #4B5563; border: 1px solid #E5E7EB;}
 .passo.ok {background: #DCFCE7; color: #166534; border-color: #BBF7D0;}
+.resp-topo {padding: 10px 14px; border-radius: 10px; margin: 0 0 10px; font-size: .95rem;}
+.resp-topo.voce {background: #FEF3C7; color: #78350F;}
+.resp-topo.nos {background: #E0E7FF; color: #312E81;}
+.resp-topo.ok {background: #DCFCE7; color: #14532D;}
+.resps {display: flex; flex-direction: column; gap: 6px; margin: 0 0 16px;}
+.resp {display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border-radius: 10px;
+       border: 1px solid #E5E7EB; border-left-width: 5px; background: #FFFFFF;}
+.resp.ok {border-left-color: #22C55E; background: #F7FEF9;}
+.resp.voce {border-left-color: #F59E0B; background: #FFFBEB; border-color: #FCD34D;}
+.resp.nos {border-left-color: #6366F1;}
+.resp-n {flex: 0 0 26px; height: 26px; border-radius: 50%; background: #F3F4F6; color: #374151;
+         display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .85rem;}
+.resp.ok .resp-n {background: #DCFCE7; color: #166534;}
+.resp.voce .resp-n {background: #FDE68A; color: #78350F;}
+.resp.nos .resp-n {background: #E0E7FF; color: #3730A3;}
+.resp-txt {flex: 1; min-width: 0;}
+.resp-nome {font-weight: 600; color: #111827; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;}
+.resp-selo {font-size: .75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #F3F4F6; color: #4B5563;}
+.resp.ok .resp-selo {background: #DCFCE7; color: #166534;}
+.resp.voce .resp-selo {background: #FDE68A; color: #78350F;}
+.resp.nos .resp-selo {background: #E0E7FF; color: #3730A3;}
+.resp-det {font-size: .85rem; color: #4B5563; margin-top: 2px;}
 [class*="st-key-celwrap"] [data-testid="stHorizontalBlock"] {flex-wrap: nowrap; gap: 8px;}
 [class*="st-key-celwrap"] [data-testid="stColumn"]:first-child {flex: 0 0 56px !important; min-width: 56px !important;}
 [class*="st-key-celwrap"] [data-testid="stColumn"]:last-child {flex: 1 1 auto !important; min-width: 0 !important;}
@@ -776,14 +798,80 @@ def passos_html(r):
     return '<div class="passos">' + "".join(itens) + "</div>"
 
 
+def quem_responde(r):
+    """Para o candidato: situação de cada etapa e com quem está a pendência (ok | voce | nos)."""
+    feitas = etapas_concluidas(r)
+    form = bool(r["form_enviado_em"])
+    itens = [(1, "Entrevista", "ok", "Aprovado na entrevista.")]
+
+    if feitas[2]:
+        itens.append((2, "Seus dados e CNPJ", "ok", "Dados pessoais e CNPJ recebidos."))
+    elif not form:
+        itens.append((2, "Seus dados e CNPJ", "voce", "Preencha o formulário abaixo com seus dados e o CNPJ."))
+    elif r["possui_cnpj"] != SIM:
+        itens.append((2, "Seus dados e CNPJ", "voce", "Abra o CNPJ e informe o número aqui."))
+    elif r["cnpj_apto"] != SIM:
+        itens.append((2, "Seus dados e CNPJ", "voce", "Regularize o CNPJ e valide de novo."))
+    else:
+        itens.append((2, "Seus dados e CNPJ", "nos", "Estamos conferindo o seu Cartão CNPJ."))
+
+    if feitas[3]:
+        itens.append((3, "Documentos", "ok", "Documentos aprovados."))
+    elif r["doc_status"] == "Reprovada":
+        itens.append((3, "Documentos", "voce", f"Ajuste pedido pelo RH: {r['doc_obs'] or 'fale com o RH.'}"))
+    elif not form:
+        itens.append((3, "Documentos", "voce", "Envie seus documentos junto com o formulário."))
+    else:
+        itens.append((3, "Documentos", "nos", "Estamos conferindo os seus documentos."))
+
+    if feitas[4]:
+        itens.append((4, "Contrato", "ok", "Contrato assinado."))
+    elif r["contrato_enviado"] == SIM:
+        itens.append((4, "Contrato", "voce", "Assine o contrato que enviamos por e-mail e devolva ao RH."))
+    else:
+        itens.append((4, "Contrato", "nos", "Vamos preparar e enviar o seu contrato para assinatura."))
+
+    itens.append((5, "Acessos", "ok", "E-mail, Looker e sistema de propostas liberados.") if feitas[5]
+                 else (5, "Acessos", "nos", "Vamos criar seus acessos (e-mail, Looker e sistema de propostas)."))
+    itens.append((6, "Integração", "ok", "Integração concluída.") if feitas[6]
+                 else (6, "Integração", "nos", "Vamos agendar sua integração e apresentar seu padrinho."))
+    if r["status_final"] == STATUS_ATIVO:
+        itens.append((7, "Início", "ok", "Onboarding concluído."))
+    else:
+        itens.append((7, "Início", "nos", "Liberamos o seu início quando as etapas acima estiverem concluídas."))
+    return itens
+
+
+SELO_RESP = {"ok": ("✅", "Concluída"), "voce": ("👉", "Pendente com você"), "nos": ("⏳", "Com a nossa equipe")}
+
+
+def responsaveis_html(r):
+    itens = quem_responde(r)
+    n_voce = sum(1 for i in itens if i[2] == "voce")
+    n_nos = sum(1 for i in itens if i[2] == "nos")
+    if n_voce:
+        topo = (f'<div class="resp-topo voce">👉 <b>{n_voce} {"etapa depende" if n_voce == 1 else "etapas dependem"} '
+                f'de você</b> · ⏳ {n_nos} com a nossa equipe</div>')
+    elif n_nos:
+        topo = '<div class="resp-topo nos">⏳ <b>Nada pendente com você agora.</b> O restante está com a nossa equipe.</div>'
+    else:
+        topo = '<div class="resp-topo ok">✅ <b>Todas as etapas concluídas.</b></div>'
+    linhas = "".join(
+        f'<div class="resp {s}"><div class="resp-n">{n}</div><div class="resp-txt"><div class="resp-nome">{nome}'
+        f'<span class="resp-selo">{SELO_RESP[s][0]} {SELO_RESP[s][1]}</span></div>'
+        f'<div class="resp-det">{esc(det)}</div></div></div>'
+        for n, nome, s, det in itens)
+    return topo + f'<div class="resps">{linhas}</div>'
+
+
 def campos_html(d):
     linhas = "".join(f'<div class="k">{esc(k)}</div><div class="v">{esc(v) or "—"}</div>' for k, v in d.items())
     return f'<div class="campos">{linhas}</div>'
 
 
 def barra_progresso(r):
-    """Versão para o candidato."""
-    html(passos_html(r))
+    """Versão para o candidato: com quem está cada etapa, ou só a entrevista enquanto não aprovado."""
+    html(responsaveis_html(r) if r["status_entrevista"] == "Aprovado" else passos_html(r))
 
 
 # =============================================================================
