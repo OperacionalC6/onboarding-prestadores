@@ -647,12 +647,19 @@ def formatar(chave, funcao):
     return _f
 
 
+# Bandeira em SVG: o Windows não desenha emojis de bandeira (mostra "BR").
+BANDEIRA_BR = ('<svg width="28" height="20" viewBox="0 0 28 20" aria-label="Brasil">'
+               '<rect width="28" height="20" rx="2" fill="#009C3B"/>'
+               '<polygon points="14,2.5 25.5,10 14,17.5 2.5,10" fill="#FFDF00"/>'
+               '<circle cx="14" cy="10" r="4.6" fill="#002776"/></svg>')
+
+
 def campo_celular(col, chave, erro=None):
     """Celular com bandeira do Brasil e máscara (99) 99999-9999."""
     with col:
         html('<div class="cel-rotulo">Celular (WhatsApp) *</div><div class="cel-ajuda">Para contato via WhatsApp</div>')
         a, b = st.container(key=f"celwrap_{chave}").columns([1, 5], gap="small", vertical_alignment="center")
-        a.markdown('<div class="cel-ddi" title="Brasil (+55)">🇧🇷</div>', unsafe_allow_html=True)
+        a.markdown(f'<div class="cel-ddi" title="Brasil (+55)">{BANDEIRA_BR}</div>', unsafe_allow_html=True)
         valor = b.text_input("Celular (WhatsApp)", key=chave, placeholder="(99) 99999-9999",
                              label_visibility="collapsed", on_change=formatar(chave, fmt_tel))
         mostrar_erro(col, erro)
@@ -1628,9 +1635,6 @@ def quadro_kanban():
                 card_prestador(r.to_dict())
 
 
-NOVO_CAMPOS = ["nc_nome", "nc_email", "nc_tel", "nc_vaga", "nc_status"]
-
-
 # =============================================================================
 # LEITURA DO CURRÍCULO (preenche nome, e-mail e celular no cadastro)
 # =============================================================================
@@ -1766,11 +1770,16 @@ def cadastrar_candidato():
         return
     nome = titulo_nome(ss["nc_nome"])
     novo = criar(nome, email, fmt_tel(ss["nc_tel"]), ss["nc_vaga"], ss.get("nc_status") or STATUS_ENTREVISTA[0])
-    cv = ss.get(f"nc_cv_{ss.get('nc_versao', 0)}")
-    if cv is not None:
-        atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
-    for c in NOVO_CAMPOS:
-        ss.pop(c, None)
+    versao = ss.get("nc_versao", 0)
+    anexos = {}
+    if ss.get(f"nc_cv_{versao}") is not None:
+        anexos["curriculo"] = guardar_arquivo(f"{novo['id']}_cv", ss[f"nc_cv_{versao}"])
+    if ss.get(f"nc_av_{versao}") is not None:
+        anexos["avaliacao"] = guardar_arquivo(f"{novo['id']}_avaliacao", ss[f"nc_av_{versao}"])
+    if anexos:
+        atualizar(novo["id"], **anexos)
+    # Atribui valores vazios em vez de apagar as chaves: apagar não limpa o que já está na tela.
+    ss.update(nc_nome="", nc_email="", nc_tel="", nc_vaga=None, nc_status=STATUS_ENTREVISTA[0])
     ss.pop("nc_cv_msg", None)
     ss["nc_versao"] = ss.get("nc_versao", 0) + 1  # troca a chave do upload para limpá-lo
     ss["nc_ok"] = novo
@@ -1801,6 +1810,8 @@ def novo_candidato():
         c2.selectbox("Vaga / Cargo *", VAGAS, index=None, placeholder="Selecione a vaga", key="nc_vaga")
         mostrar_erro(c2, erros.get("nc_vaga"))
         st.selectbox("Status da entrevista", STATUS_ENTREVISTA, key="nc_status")
+        st.file_uploader("Avaliação completa (.md, .pdf ou .docx, opcional)", type=["md", "pdf", "docx"],
+                         key=f"nc_av_{ss.get('nc_versao', 0)}")
         st.button("Cadastrar", type="primary", width="stretch", on_click=cadastrar_candidato)
 
 
