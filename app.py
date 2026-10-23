@@ -308,8 +308,7 @@ def apagar_anexo(valor):
 # =============================================================================
 # E-MAIL COM O RESUMO A CADA MUDANÇA DE ETAPA (Gmail com senha de app)
 # =============================================================================
-# Em testes: só o operacional. Para voltar o financeiro, incluir "financeirolancefinanciamentos@gmail.com".
-DESTINATARIOS_PADRAO = ["operacionalc6ehs@gmail.com"]
+DESTINATARIOS_PADRAO = ["financeirolancefinanciamentos@gmail.com", "operacionalc6ehs@gmail.com"]
 
 
 def cfg_email(chave, padrao=None):
