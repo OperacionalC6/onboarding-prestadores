@@ -41,7 +41,8 @@ st.set_page_config(page_title="Onboarding de Prestadores", page_icon="🤝", lay
 CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 VAGAS = ["Operador EGV", "Gerente de Negócios", "Gestor Comercial"]
 VAGAS_ACEITAM_MEI = {"Operador EGV"}  # nas demais vagas o CNPJ não pode ser MEI
-STATUS_ENTREVISTA = ["Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
+STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
+STATUS_TRIAGEM = ("Em Triagem", "Banco de Espera", "Reprovado")  # ficam na coluna Triagem do quadro
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
@@ -897,7 +898,8 @@ def rotulo_etapa(r):
     if f == 8:
         return STATUS_ATIVO
     if f == 1:
-        return f"1. Entrevistas ({r['status_entrevista'] or '-'})"
+        fase_nome = "Triagem" if r["status_entrevista"] in STATUS_TRIAGEM else "Entrevistas"
+        return f"1. {fase_nome} ({r['status_entrevista'] or '-'})"
     pend = pendencias(r)
     if not pend:
         return "Onboarding concluído · aguardando início"
@@ -1021,6 +1023,7 @@ CSS_CANDIDATO = """
 """
 
 KANBAN = [
+    ("triagem", "🔎 Triagem", "#64748B"),
     ("entrevista", "🗣️ Entrevista", "#6366F1"),
     (2, "📝 Formalização", "#0EA5E9"),
     (3, "📂 Documentos", "#14B8A6"),
@@ -1064,6 +1067,8 @@ def coluna_kanban(r):
     """O card fica na primeira etapa ainda pendente; as demais aparecem nos indicadores."""
     if r["status_final"] == STATUS_ATIVO:
         return 7
+    if r["status_entrevista"] in STATUS_TRIAGEM or not r["status_entrevista"]:
+        return "triagem"
     if r["status_entrevista"] != "Aprovado":
         return "entrevista"
     for k, ok in etapas_concluidas(r).items():
@@ -1238,6 +1243,7 @@ def tela_candidato():
 
     if r["status_entrevista"] != "Aprovado":
         msgs = {
+            "Em Triagem": "Recebemos seu currículo e ele está em análise. Aguarde o contato do RH.",
             "Em Entrevista": "Seu processo ainda está na fase de entrevistas. Aguarde o contato do RH.",
             "Banco de Espera": "Você está no nosso banco de espera. Entraremos em contato assim que houver oportunidade.",
             "Reprovado": "Agradecemos sua participação. Neste momento não seguiremos com o seu processo.",
@@ -1561,10 +1567,11 @@ def menu_rh():
 def kpis(df):
     ativos = int((df["status_final"] == STATUS_ATIVO).sum()) if not df.empty else 0
     em_ent = int((df["status_entrevista"] == "Em Entrevista").sum()) if not df.empty else 0
+    em_tri = int((df["status_entrevista"] == "Em Triagem").sum()) if not df.empty else 0
     onb = int(df.apply(lambda r: fase(r) == 2, axis=1).sum()) if not df.empty else 0
     pend_cnpj = int(df.apply(lambda r: fase(r) == 2 and bool(r["form_enviado_em"]) and cnpj_pendente(r),
                                   axis=1).sum()) if not df.empty else 0
-    itens = [("Candidatos", len(df)), ("Em entrevista", em_ent), ("Em onboarding", onb),
+    itens = [("Candidatos", len(df)), ("Em triagem", em_tri), ("Em entrevista", em_ent), ("Em onboarding", onb),
              ("CNPJ pendente", pend_cnpj), ("Ativos", ativos)]
     html('<div class="kpis">' + "".join(f'<div class="kpi"><b>{v}</b><span>{t}</span></div>' for t, v in itens)
          + "</div>")
@@ -1893,7 +1900,7 @@ def situacao_ficha(r):
 
 
 ABA_RESUMO = "📋 Resumo"
-ABAS_FICHA = ["1 · Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
+ABAS_FICHA = ["1 · Triagem / Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
               "5 · Acessos e materiais", "6 · Integração", "7 · Início"]
 # status: (ícone, cor da borda, cor de fundo, legenda)
 CORES_STATUS = {
@@ -2091,9 +2098,13 @@ def onepage_html(r):
     etapas_ok = sum(s == "ok" for s in status)
     pct = round(100 * feitos / total)
     fonte = "font-family:Arial,Helvetica,sans-serif;"
+    reprovado = r["status_entrevista"] == "Reprovado"
     blocos = []
-    for nome, s, lista in zip(ABAS_FICHA, status, itens):
+    etapas = list(zip(ABAS_FICHA, status, itens))
+    for nome, s, lista in (etapas[:1] if reprovado else etapas):
         icone, borda, fundo, legenda = CORES_STATUS[s]
+        if reprovado:
+            legenda = "Reprovado"
         linhas = "".join(
             f'<tr><td style="width:26px;padding:5px 0;vertical-align:top;font-size:15px">{"➖" if det.startswith("N/A") else "✅" if ok else "⬜"}</td>'
             f'<td style="padding:5px 0;font-size:14px;color:{"#111827" if ok else "#6B7280"}">{esc(item)}</td>'
@@ -2102,13 +2113,26 @@ def onepage_html(r):
         blocos.append(
             f'<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 12px;'
             f'border:1px solid {borda};border-left:6px solid {borda};border-radius:8px">'
-            f'<tr><td style="background:{fundo};padding:10px 14px">'
-            f'<span style="font-size:15px;font-weight:bold;color:#111827">{icone} {esc(nome)}</span>'
-            f'<span style="float:right;font-size:12px;color:#374151;padding-top:2px">{legenda}</span></td></tr>'
+            f'<tr><td style="background:{fundo};padding:10px 14px"><table width="100%" cellpadding="0" '
+            f'cellspacing="0"><tr><td style="font-size:15px;font-weight:bold;color:#111827">{icone} {esc(nome)}</td>'
+            f'<td style="font-size:12px;color:#374151;text-align:right;white-space:nowrap">{legenda}</td></tr>'
+            f"</table></td></tr>"
             f'<tr><td style="padding:4px 14px 8px"><table width="100%" cellpadding="0" cellspacing="0">{linhas}'
             f"</table></td></tr></table>")
     dados = [("Vaga", r["vaga"]), ("E-mail", r["email"]), ("Telefone", r["telefone"]),
-             ("Código de acesso", r["codigo_acesso"]), ("Situação", r["status_final"] or "Em onboarding")]
+             ("Código de acesso", r["codigo_acesso"]),
+             ("Situação", "Reprovado" if reprovado else r["status_final"] or "Em onboarding")]
+    if reprovado:
+        progresso = ('<div style="font-size:14px;color:#991B1B"><b>Processo encerrado: candidato(a) reprovado(a) '
+                     "na triagem/entrevista.</b></div>")
+    else:
+        progresso = (
+            f'<div style="font-size:14px;color:#111827"><b>{etapas_ok} de 7 etapas concluídas</b> · '
+            f"{feitos} de {total} itens do checklist ({pct}%)</div>"
+            f'<div style="background:#E5E7EB;height:8px;border-radius:4px;margin:8px 0 6px">'
+            f'<div style="background:#16A34A;height:8px;width:{pct}%;border-radius:4px"></div></div>'
+            f'<div style="font-size:12px;color:#6B7280">'
+            + " · ".join(f"{ic} {txt}" for ic, _, _, txt in CORES_STATUS.values()) + "</div>")
     cab = "".join(f'<td style="padding:0 18px 0 0;font-size:12px;color:#E0E7FF">{esc(k)}<br>'
                   f'<b style="font-size:14px;color:#fff">{esc(v) or "—"}</b></td>' for k, v in dados)
     return (
@@ -2119,14 +2143,8 @@ def onepage_html(r):
         f'<div style="font-size:12px;color:#C7D2FE;letter-spacing:.06em">RESUMO DE ONBOARDING</div>'
         f'<div style="font-size:24px;font-weight:bold;color:#fff;margin:4px 0 14px">{esc(r["nome"])}</div>'
         f'<table cellpadding="0" cellspacing="0"><tr>{cab}</tr></table></td></tr>'
-        f'<tr><td style="padding:18px 24px 6px">'
-        f'<div style="font-size:14px;color:#111827"><b>{etapas_ok} de 7 etapas concluídas</b> · '
-        f"{feitos} de {total} itens do checklist ({pct}%)</div>"
-        f'<div style="background:#E5E7EB;height:8px;border-radius:4px;margin:8px 0 6px">'
-        f'<div style="background:#16A34A;height:8px;width:{pct}%;border-radius:4px"></div></div>'
-        f'<div style="font-size:12px;color:#6B7280">'
-        + " · ".join(f"{ic} {txt}" for ic, _, _, txt in CORES_STATUS.values()) +
-        f'</div></td></tr><tr><td style="padding:12px 24px 8px">{"".join(blocos)}</td></tr>'
+        f'<tr><td style="padding:18px 24px 6px">{progresso}</td></tr>'
+        f'<tr><td style="padding:12px 24px 8px">{"".join(blocos)}</td></tr>'
         f'<tr><td style="padding:4px 24px 20px;font-size:11px;color:#9CA3AF">'
         f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')} pelo sistema de Onboarding de Prestadores."
         f"</td></tr></table></div>"
