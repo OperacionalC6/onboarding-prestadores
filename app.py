@@ -1631,6 +1631,124 @@ def quadro_kanban():
 NOVO_CAMPOS = ["nc_nome", "nc_email", "nc_tel", "nc_vaga", "nc_status"]
 
 
+# =============================================================================
+# LEITURA DO CURRÍCULO (preenche nome, e-mail e celular no cadastro)
+# =============================================================================
+# palavras sem acento que indicam título de seção ou endereço, nunca nome de pessoa
+PALAVRAS_NAO_NOME = {"curriculo", "curriculum", "vitae", "resume", "resumo", "perfil", "dados", "pessoais",
+                     "objetivo", "objetivos", "contato", "contatos", "endereco", "telefone", "email", "e-mail",
+                     "experiencia", "experiencias", "formacao", "profissional", "profissionais", "brasileiro",
+                     "brasileira", "solteiro", "solteira", "casado", "casada", "rua", "avenida", "cpf",
+                     "competencias", "principais", "informacao", "informacoes", "interna", "academica",
+                     "habilidades", "idiomas", "cursos", "qualificacoes", "gestao", "comercial", "vendas",
+                     "gerente", "analista", "consultor", "consultora", "assistente", "coordenador",
+                     "coordenadora", "supervisor", "supervisora", "horizonte", "paulo", "janeiro", "brasil",
+                     "ambiente", "linkedin", "sobre", "mim", "complementar", "complementares"}
+
+
+def texto_curriculo(nome_arquivo, conteudo):
+    """Texto de um PDF ou DOCX ("" se não der para ler, ex.: PDF escaneado ou .doc antigo)."""
+    from io import BytesIO
+
+    try:
+        if nome_arquivo.lower().endswith(".pdf"):
+            from pypdf import PdfReader
+
+            return "\n".join((p.extract_text() or "") for p in PdfReader(BytesIO(conteudo)).pages[:3])
+        if nome_arquivo.lower().endswith(".docx"):
+            import zipfile
+
+            xml = zipfile.ZipFile(BytesIO(conteudo)).read("word/document.xml").decode("utf-8", "ignore")
+            xml = re.sub(r"</w:p>|<w:br[^>]*/>|<w:tab[^>]*/>", "\n", xml)
+            return re.sub(r"<[^>]+>", "", xml).replace("&amp;", "&")
+    except Exception:
+        return ""
+    return ""
+
+
+CONECTIVOS_NOME = {"de", "da", "do", "das", "dos", "e"}
+
+
+def _sem_acento(v):
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFD", v.lower()) if unicodedata.category(c) != "Mn")
+
+
+def _parece_nome(linha):
+    palavras = linha.split(" ")
+    if not 2 <= len(palavras) <= 6 or re.search(r"[\d@/|()]| - ", linha) or linha.endswith("."):
+        return False
+    if any(_sem_acento(p.strip(",.")) in PALAVRAS_NAO_NOME for p in palavras):
+        return False
+    if not all(re.fullmatch(r"[A-Za-zÀ-ÿ'´`]+", p) for p in palavras):
+        return False
+    # nome próprio: cada palavra com inicial maiúscula (ou tudo maiúsculo), exceto conectivos
+    return all(p.lower() in CONECTIVOS_NOME or (len(p) >= 2 and p[0].isupper() and (p[1:].islower() or p.isupper()))
+               for p in palavras) and not erro_nome(linha)
+
+
+def _nome_curriculo(texto, email):
+    """Nome do candidato no currículo, ou "" na dúvida (melhor deixar vazio do que preencher errado).
+
+    Aceita a linha que bate com o usuário do e-mail; sem essa pista, só aceita um nome logo no topo.
+    Também junta linhas seguidas de uma palavra só (layouts que quebram "JÉSSICA" / "PEREIRA").
+    """
+    usuario = _sem_acento(email.split("@")[0])
+    linhas = [re.sub(r"\s+", " ", l).strip(" -|•:,") for l in texto.splitlines()]
+    linhas = [l for l in linhas if l][:60]
+    candidatos = []
+    for i, linha in enumerate(linhas):
+        opcoes = [linha]
+        if " " not in linha:  # nome quebrado em várias linhas
+            for k in (2, 3, 4):
+                bloco = linhas[i:i + k]
+                if len(bloco) == k and all(" " not in x for x in bloco):
+                    opcoes.append(" ".join(bloco))
+        for op in opcoes:
+            if not _parece_nome(op):
+                continue
+            bate = sum(len(p) >= 3 and _sem_acento(p) in usuario for p in op.split(" ")
+                       if p.lower() not in CONECTIVOS_NOME)
+            if bate or i < 3:
+                candidatos.append((-bate, i, -len(op), op))
+    return titulo_nome(min(candidatos)[3]) if candidatos else ""
+
+
+def dados_curriculo(texto):
+    """Nome, e-mail e celular encontrados no texto do currículo (vazio quando não achar)."""
+    achados = {}
+    m = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", texto)
+    if m:
+        achados["email"] = m.group(0).lower().rstrip(".")
+    for m in re.finditer(r"(?:\+?55[\s.-]*)?\(?\b(\d{2})\)?[\s.-]*(9[\s.]?\d{4})[\s.-]*(\d{4})\b", texto):
+        achados["tel"] = fmt_tel(m.group(1) + re.sub(r"\D", "", m.group(2)) + m.group(3))
+        break
+    nome = _nome_curriculo(texto, achados.get("email", ""))
+    if nome:
+        achados["nome"] = nome
+    return achados
+
+
+def ler_curriculo_novo():
+    """Callback do upload no cadastro: preenche os campos ainda vazios com o que achar no currículo."""
+    ss = st.session_state
+    cv = ss.get(f"nc_cv_{ss.get('nc_versao', 0)}")
+    if cv is None:
+        ss.pop("nc_cv_msg", None)
+        return
+    achados = dados_curriculo(texto_curriculo(cv.name, cv.getvalue()))
+    preenchidos = []
+    for chave, campo, rotulo in (("nome", "nc_nome", "nome"), ("email", "nc_email", "e-mail"),
+                                 ("tel", "nc_tel", "celular")):
+        if achados.get(chave) and not ss.get(campo, "").strip():
+            ss[campo] = achados[chave]
+            preenchidos.append(rotulo)
+    ss["nc_cv_msg"] = (("ok", "Preenchido pelo currículo: " + ", ".join(preenchidos) + ". Confira antes de cadastrar.")
+                       if preenchidos else
+                       ("info", "Não encontrei nome, e-mail ou celular novos no currículo. Preencha manualmente."))
+
+
 def cadastrar_candidato():
     """Callback do botão Cadastrar: valida, grava e limpa o formulário."""
     ss = st.session_state
@@ -1653,6 +1771,7 @@ def cadastrar_candidato():
         atualizar(novo["id"], curriculo=guardar_arquivo(f"{novo['id']}_cv", cv))
     for c in NOVO_CAMPOS:
         ss.pop(c, None)
+    ss.pop("nc_cv_msg", None)
     ss["nc_versao"] = ss.get("nc_versao", 0) + 1  # troca a chave do upload para limpá-lo
     ss["nc_ok"] = novo
 
@@ -1666,6 +1785,12 @@ def novo_candidato():
         novo = ss.pop("nc_ok", None)
         if novo:
             st.success(f"Cadastro feito: {novo['nome']}. Código de acesso: **{novo['codigo_acesso']}**")
+        st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"],
+                         key=f"nc_cv_{ss.get('nc_versao', 0)}", on_change=ler_curriculo_novo,
+                         help="Ao anexar, nome, e-mail e celular são preenchidos a partir do currículo.")
+        tipo_msg, msg_cv = ss.get("nc_cv_msg") or (None, None)
+        if msg_cv:
+            (st.success if tipo_msg == "ok" else st.info)(msg_cv)
         c1, c2 = st.columns(2)
         c1.text_input("Nome *", key="nc_nome", placeholder="Nome e sobrenome")
         mostrar_erro(c1, erros.get("nc_nome"))
@@ -1676,8 +1801,6 @@ def novo_candidato():
         c2.selectbox("Vaga / Cargo *", VAGAS, index=None, placeholder="Selecione a vaga", key="nc_vaga")
         mostrar_erro(c2, erros.get("nc_vaga"))
         st.selectbox("Status da entrevista", STATUS_ENTREVISTA, key="nc_status")
-        st.file_uploader("Currículo (PDF ou Word, opcional)", type=["pdf", "doc", "docx"],
-                         key=f"nc_cv_{ss.get('nc_versao', 0)}")
         st.button("Cadastrar", type="primary", width="stretch", on_click=cadastrar_candidato)
 
 
