@@ -70,7 +70,7 @@ COLUNAS = [
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
     "cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
-    "is_mei", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
+    "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
     "cnpj_apto", "cartao_cnpj", "form_enviado_em",
     # Etapa 3
     "doc_status", "doc_obs", "doc_validado_em",
@@ -802,6 +802,9 @@ def montar_endereco(d):
     return " · ".join(x for x in partes if x)
 
 
+REGIMES = ["MEI", "Simples Nacional (ME/EPP)", "Outro (Lucro Presumido ou Real)"]
+
+
 def aceita_mei(vaga):
     return vaga in VAGAS_ACEITAM_MEI
 
@@ -1402,41 +1405,50 @@ def formulario_candidato(r, prefixo="cand"):
         elif res["status"] == "invalido":
             st.error("CNPJ inválido. Confira os números digitados.")
         else:
-            declarado = False
+            # A consulta automática serve de referência; quem decide é a declaração do candidato,
+            # porque as bases públicas demoram a refletir CNPJs novos, troca de regime e inclusão de CNAE.
+            auto_mei = auto_cnae = None
             if res["status"] == "ok":
                 cnaes = [res["cnae_principal"]] + res["cnaes_secundarios"]
-                tem_cnae = CNAE_EXIGIDO in [so_digitos(x).zfill(7) for x in cnaes if x]
+                auto_cnae = CNAE_EXIGIDO in [so_digitos(x).zfill(7) for x in cnaes if x]
+                auto_mei = res["is_mei"]
                 situacao, fonte = res["situacao"], f"Automática ({res['fonte']})"
                 st.write(f"**{res['razao_social']}** · {res['natureza_juridica']} · Situação: {situacao}")
-                col_a, col_b = st.columns(2)
-                col_b.metric(f"CNAE {fmt_cnae(CNAE_EXIGIDO)}?", "Sim ✅" if tem_cnae else "Não ❌")
-                if res["is_mei"] is None:  # a fonte não informou o SIMEI
-                    is_mei = col_a.radio("A empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1,
-                                         key=k("mei_ws")) == "Sim"
-                    fonte += " · MEI declarado"
-                    declarado = True
-                else:
-                    is_mei = res["is_mei"]
-                    col_a.metric("Enquadrado como MEI?", ("Sim ✅" if aceita_mei(r["vaga"]) else "Sim ❌")
-                                 if is_mei else "Não ✅")
-            else:  # não encontrado ou fontes fora do ar -> declaração conferida pelo RH no cartão
+                ref = [f"MEI: {'Sim' if auto_mei else 'Não'}" if auto_mei is not None else "MEI: não informado",
+                       f"CNAE {fmt_cnae(CNAE_EXIGIDO)}: {'Sim' if auto_cnae else 'Não'}"]
+                st.caption(f"Consulta automática ({res['fonte']}): " + " · ".join(ref) +
+                           ". As bases públicas podem levar semanas para atualizar, então confirme abaixo.")
+            else:
                 if res["status"] == "nao_encontrado":
                     st.warning(
                         "Não encontramos este CNPJ nas bases públicas da Receita. **Isso é normal para CNPJs abertos "
                         "há poucas semanas**: essas bases são atualizadas cerca de uma vez por mês. "
                         "Responda abaixo e anexe o Cartão CNPJ; o RH vai conferir."
                     )
-                    fonte = "Declaração do candidato (CNPJ ainda fora das bases públicas)"
                 else:
                     st.warning("Não conseguimos consultar a Receita agora. Responda abaixo e anexe o Cartão CNPJ; "
                                "o RH vai conferir.")
-                    fonte = "Declaração do candidato (consulta indisponível)"
-                is_mei = st.radio("A empresa é MEI?", ["Sim", "Não"], horizontal=True, index=1, key=k("mei")) == "Sim"
-                tem_cnae = st.radio(f"O CNPJ possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)?",
-                                    ["Sim", "Não"], horizontal=True, key=k("cnae")) == "Sim"
-                situacao = ""
-                declarado = True
+                situacao, fonte = "", "Declaração do candidato (CNPJ não confirmado na consulta automática)"
                 res = {**res, "razao_social": "", "natureza_juridica": "", "cnae_principal": "", "cnaes_secundarios": []}
+
+            st.markdown("**Confirme as informações da sua empresa** (estão no Cartão CNPJ)")
+            col_a, col_b = st.columns(2)
+            # padrão: o que o candidato já declarou antes; sem isso, o que a consulta trouxe
+            regime_atual = r["regime_tributario"] if r["regime_tributario"] in REGIMES else (
+                "MEI" if auto_mei else REGIMES[1])
+            regime = col_a.radio("Enquadramento da empresa *", REGIMES, index=REGIMES.index(regime_atual),
+                                 key=k(f"regime_{so_digitos(cnpj)}"))
+            cnae_atual = (r["tem_cnae"] == SIM) if r["tem_cnae"] in (SIM, "Não") else bool(auto_cnae)
+            tem_cnae = col_b.radio(f"Possui o CNAE {fmt_cnae(CNAE_EXIGIDO)} (Promoção de vendas)? *", ["Sim", "Não"],
+                                   index=0 if cnae_atual else 1, horizontal=True,
+                                   key=k(f"cnae_{so_digitos(cnpj)}")) == "Sim"
+            is_mei = regime == "MEI"
+            divergente = [nome for nome, auto, decl in (("MEI", auto_mei, is_mei), ("CNAE", auto_cnae, tem_cnae))
+                          if auto is not None and auto != decl]
+            declarado = res["status"] != "ok" or bool(divergente)
+            if divergente:
+                fonte = f"Declaração do candidato ({', '.join(divergente)} diferente da consulta {res['fonte']})"
+                st.info("Sua resposta é diferente da consulta automática. Tudo bem: o RH vai conferir no Cartão CNPJ.")
 
             apto, pend = avaliar_regras(is_mei, tem_cnae, situacao, r["vaga"])
             confirmou = True
@@ -1459,7 +1471,7 @@ def formulario_candidato(r, prefixo="cand"):
             cnpj_info = {
                 "possui_cnpj": "Sim", "cnpj": so_digitos(cnpj),
                 "razao_social": res.get("razao_social", ""), "natureza_juridica": res.get("natureza_juridica", ""),
-                "situacao_cnpj": situacao, "is_mei": SIM if is_mei else "Não",
+                "situacao_cnpj": situacao, "is_mei": SIM if is_mei else "Não", "regime_tributario": regime,
                 "tem_cnae": SIM if tem_cnae else "Não",
                 "cnae_principal": fmt_cnae(res["cnae_principal"]) if res.get("cnae_principal") else "",
                 "cnaes_secundarios": ", ".join(fmt_cnae(x) for x in res.get("cnaes_secundarios", [])),
@@ -2071,7 +2083,7 @@ def checklist_etapas(r):
          (bool(r["cpf"]) and bool(r["endereco"]), "Dados pessoais e endereço", r["cidade"] and f"{r['cidade']}/{r['uf']}"),
          (r["possui_cnpj"] == SIM, "CNPJ", cnpj_txt),
          (r["possui_cnpj"] == SIM and not cnpj_pendente(r), "CNPJ dentro das regras",
-          "MEI: " + (r["is_mei"] or "—") + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
+          (r["regime_tributario"] or "MEI: " + (r["is_mei"] or "—")) + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
           if r["possui_cnpj"] == SIM else ""),
          (bool(r["cartao_cnpj"]), "Cartão CNPJ", arq(r["cartao_cnpj"]))],
         [(r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
