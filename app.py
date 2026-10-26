@@ -1379,7 +1379,7 @@ def formulario_candidato(r, prefixo="cand"):
 
     cnpj_info = {}
     arquivo = None
-    apto = False
+    apto = mantido = False
 
     if possui == "Não":
         st.info((AVISO_COM_MEI if aceita_mei(r["vaga"]) else AVISO_SEM_MEI) + ORIENTACOES_SEM_CNPJ)
@@ -1400,7 +1400,14 @@ def formulario_candidato(r, prefixo="cand"):
         if res and res.get("cnpj") and res["cnpj"] != so_digitos(cnpj):
             res = None  # o CNPJ digitado mudou, precisa validar de novo
 
-        if not res:
+        rh = prefixo != "cand"
+        # No painel, o CNPJ que o candidato já enviou vale como está; só revalida se o RH trocar o número.
+        mantido = rh and not res and r["form_enviado_em"] and r["possui_cnpj"] == SIM and so_digitos(cnpj) == r["cnpj"]
+        if mantido:
+            resumo_declaracao_cnpj(r)
+            st.caption("Para corrigir enquadramento ou CNAE, clique em **Validar CNPJ** e ajuste as respostas.")
+            apto = r["cnpj_apto"] == SIM
+        elif not res:
             st.caption("Clique em **Validar CNPJ** para conferirmos MEI e CNAE automaticamente.")
         elif res["status"] == "invalido":
             st.error("CNPJ inválido. Confira os números digitados.")
@@ -1431,7 +1438,8 @@ def formulario_candidato(r, prefixo="cand"):
                 situacao, fonte = "", "Declaração do candidato (CNPJ não confirmado na consulta automática)"
                 res = {**res, "razao_social": "", "natureza_juridica": "", "cnae_principal": "", "cnaes_secundarios": []}
 
-            st.markdown("**Confirme as informações da sua empresa** (estão no Cartão CNPJ)")
+            st.markdown("**Informações da empresa** (estão no Cartão CNPJ)" if rh else
+                        "**Confirme as informações da sua empresa** (estão no Cartão CNPJ)")
             col_a, col_b = st.columns(2)
             # padrão: o que o candidato já declarou antes; sem isso, o que a consulta trouxe
             regime_atual = r["regime_tributario"] if r["regime_tributario"] in REGIMES else (
@@ -1448,11 +1456,12 @@ def formulario_candidato(r, prefixo="cand"):
             declarado = res["status"] != "ok" or bool(divergente)
             if divergente:
                 fonte = f"Declaração do candidato ({', '.join(divergente)} diferente da consulta {res['fonte']})"
-                st.info("Sua resposta é diferente da consulta automática. Tudo bem: o RH vai conferir no Cartão CNPJ.")
+                st.info("Diferente da consulta automática: confira no Cartão CNPJ na Etapa 3." if rh else
+                        "Sua resposta é diferente da consulta automática. Tudo bem: o RH vai conferir no Cartão CNPJ.")
 
             apto, pend = avaliar_regras(is_mei, tem_cnae, situacao, r["vaga"])
             confirmou = True
-            if apto and declarado:
+            if apto and declarado and not rh:
                 confirmou = st.checkbox("Declaro que essas informações conferem com o Cartão CNPJ que vou anexar.",
                                         key=k("declaro"))
             if apto and confirmou:
@@ -1494,7 +1503,7 @@ def formulario_candidato(r, prefixo="cand"):
         }
         por_campo = {c: m for c, m in por_campo.items() if m}
         gerais = []
-        if possui == "Sim" and not cnpj_info:
+        if possui == "Sim" and not cnpj_info and not mantido:
             gerais.append("Valide o CNPJ antes de enviar.")
         if apto and arquivo is None and not r["cartao_cnpj"]:
             gerais.append("Anexe o Cartão CNPJ.")
@@ -1515,7 +1524,7 @@ def formulario_candidato(r, prefixo="cand"):
         )
         if arquivo is not None:
             campos["cartao_cnpj"] = guardar_arquivo(pid, arquivo)
-        if apto and r["doc_status"] != DOC_APROVADA_PEND:
+        if apto and not mantido and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
         if prefixo == "cand":
@@ -2238,6 +2247,7 @@ def aba_formalizacao(r):
             "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else
             "🔎 CNPJ declarado, conferir na Etapa 3" if cnpj_declarado(r) else "⚠️ CNPJ fora das regras")
         (st.warning if cnpj_pendente(r) else st.success)(f"Formulário enviado em {data_br(r['form_enviado_em'])} · {situ}")
+        resumo_declaracao_cnpj(r)
     else:
         st.warning("O candidato ainda não preencheu o formulário.")
 
@@ -2249,13 +2259,30 @@ def aba_formalizacao(r):
         formulario_candidato(r, prefixo="rh")
 
 
+def resumo_declaracao_cnpj(r):
+    """O que o candidato declarou sobre o CNPJ, para o RH ler sem precisar declarar de novo."""
+    if r["possui_cnpj"] != SIM:
+        return
+    fonte = r["fonte_validacao"]
+    origem = ("✍️ Autodeclarado pelo candidato" if "declara" in fonte.lower() else
+              "✅ Conferido pelo RH" if fonte.startswith("Conferido") else "🤖 Confirmado pela consulta automática")
+    regime = r["regime_tributario"] or ("MEI" if r["is_mei"] == SIM else "Não é MEI")
+    with st.container(border=True):
+        st.markdown(f"**CNPJ {fmt_cnpj(r['cnpj'])}**" + (f" · {r['razao_social']}" if r["razao_social"] else ""))
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"Enquadramento\n\n**{regime}**")
+        c2.markdown(f"CNAE {fmt_cnae(CNAE_EXIGIDO)}\n\n**{r['tem_cnae'] or '-'}**")
+        c3.markdown(f"Origem\n\n**{origem}**")
+        st.caption(fonte + (" · Confira no Cartão CNPJ na Etapa 3." if cnpj_declarado(r) else ""))
+
+
 def validacao_manual_cnpj(r):
     """CNPJs recém-abertos não aparecem nas bases públicas: o RH confere no cartão e valida aqui."""
     with st.container(border=True):
         st.markdown("**🔎 Validar CNPJ pelo cartão**")
-        st.caption("As bases públicas ainda não tinham este CNPJ (comum em empresas abertas há poucas semanas), "
-                   "então o candidato declarou os dados. Abra o cartão CNPJ acima, ou consulte no site da "
-                   "Receita Federal, e confirme.")
+        st.caption("O candidato autodeclarou os dados abaixo (a consulta automática não confirmou ou deu diferente). "
+                   "Abra o cartão CNPJ acima, ou consulte no site da Receita Federal, e confirme.")
+        resumo_declaracao_cnpj(r)
         st.link_button("Abrir consulta na Receita Federal",
                        "https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp")
         ativa = st.checkbox("Situação cadastral ATIVA", key=f"mv_ativa_{r['id']}")
