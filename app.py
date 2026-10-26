@@ -1885,12 +1885,12 @@ def sn(v):
     return SIM if v else ""
 
 
-OPCOES_OK_NA = {"✅ OK": SIM, "➖ N/A": NA}
+OPCOES_OK_NA = {"⏳ Pendente": "", "✅ OK": SIM, "➖ N/A": NA}
 
 
 def ok_na(r, campo, key, ajuda=None):
-    """Botões OK / N/A do item; nenhum selecionado = pendente. Devolve "Sim", "N/A" ou ""."""
-    atual = next((k for k, v in OPCOES_OK_NA.items() if v == r[campo]), None)
+    """Botões Pendente / OK / N/A do item. Devolve "", "Sim" ou "N/A" (nada marcado também conta como pendente)."""
+    atual = next((k for k, v in OPCOES_OK_NA.items() if v == r[campo]), "⏳ Pendente")
     escolha = st.segmented_control(campo, list(OPCOES_OK_NA), default=atual, label_visibility="collapsed",
                                    key=f"{key}_{r['id']}_{r['atualizado_em']}", help=ajuda)
     return OPCOES_OK_NA.get(escolha, "")
@@ -2393,11 +2393,11 @@ def aba_acessos(r):
         ("ti_propostas", "Acesso ao sistema de digitação de propostas", "Usuário do sistema de propostas", ""),
     ]
     campos, faltando = {}, []
-    st.caption("Marque **OK** quando estiver feito ou **N/A** quando o prestador não for elegível. "
-               "Sem marcação, o item fica pendente.")
+    st.caption("Marque **OK** quando estiver feito, **N/A** quando o prestador não for elegível "
+               "ou **Pendente** enquanto ainda falta fazer.")
     st.markdown("###### Acessos")
     for campo, rotulo, rotulo_usuario, exemplo in acessos:
-        c1, c2, c3 = st.columns([2.2, 1.3, 2.5], vertical_alignment="center")
+        c1, c2, c3 = st.columns([2, 1.7, 2.3], vertical_alignment="center")
         with c1:
             linha_item(rotulo)
         with c2:
@@ -2416,7 +2416,7 @@ def aba_acessos(r):
     st.markdown("###### Materiais entregues")
     for campo, rotulo in [("mat_computador", "Computador corporativo"), ("mat_celular", "Celular corporativo"),
                           ("mat_uniforme", "Uniforme")]:
-        c1, c2, _ = st.columns([2.2, 1.3, 2.5], vertical_alignment="center")
+        c1, c2, _ = st.columns([2, 1.7, 2.3], vertical_alignment="center")
         with c1:
             linha_item(rotulo)
         with c2:
@@ -2439,7 +2439,8 @@ def aba_integracao(r):
         ("onb_cultura", "Cultura organizacional e código de conduta", "cultura_conduta"),
     ]
     marcados = {}
-    st.caption("Marque **OK** quando o conteúdo for apresentado ou **N/A** quando não se aplicar ao prestador.")
+    st.caption("Marque **OK** quando o conteúdo for apresentado, **N/A** quando não se aplicar ao prestador "
+               "ou **Pendente** enquanto ainda falta fazer.")
     for campo, rotulo, chave_link in materiais:
         c1, c2, c3 = st.columns([2.6, 1.3, 1], vertical_alignment="center")
         with c1:
