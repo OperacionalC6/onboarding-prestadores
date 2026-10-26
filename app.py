@@ -23,8 +23,10 @@ Validação de CNPJ: BrasilAPI (gratuita) com fallback para publica.cnpj.ws e,
 se ambas falharem, declaração manual do candidato marcada para conferência do RH.
 """
 
+import io
 import json
 import re
+import zipfile
 import secrets as pysecrets
 from datetime import date, datetime
 from pathlib import Path
@@ -1921,6 +1923,7 @@ def situacao_ficha(r):
 
 
 ABA_RESUMO = "📋 Resumo"
+ABA_ANEXOS = "📎 Anexos"
 ABAS_FICHA = ["1 · Triagem / Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
               "5 · Acessos e materiais", "6 · Integração", "7 · Início"]
 # status: (ícone, cor da borda, cor de fundo, legenda)
@@ -2038,14 +2041,15 @@ def ficha_prestador(r):
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
          f'<p><b>{situacao_ficha(r)}</b></p></div>')
 
-    rotulos = [ABA_RESUMO] + rotulos_abas(r)
+    rotulos = [ABA_RESUMO] + rotulos_abas(r) + [ABA_ANEXOS]
     # A aba aberta é guardada pela posição, porque o ícone do rótulo muda quando o status muda.
     # Posição 0 é o resumo; a etapa N (índice N-1 em ABAS_FICHA) fica na posição N.
     if st.session_state.get("ficha_abas_de") != r["id"]:  # ficha recém-aberta: começa no resumo
         idx = 0
     else:
         atual = st.session_state.get("ficha_abas") or ABA_RESUMO
-        idx = next((i + 1 for i, nome in enumerate(ABAS_FICHA) if atual.endswith(nome)), 0)
+        idx = len(rotulos) - 1 if atual == ABA_ANEXOS else next(
+            (i + 1 for i, nome in enumerate(ABAS_FICHA) if atual.endswith(nome)), 0)
     if "ficha_ir" in st.session_state:
         idx = st.session_state.pop("ficha_ir") + 1
     st.session_state["ficha_abas_de"] = r["id"]
@@ -2070,6 +2074,63 @@ def ficha_prestador(r):
         aba_integracao(r)
     with abas[7]:
         aba_inicio(r)
+    with abas[8]:
+        aba_anexos(r)
+
+
+# Todos os anexos do processo: (campo, documento, etapa onde é enviado)
+ANEXOS_PROCESSO = [
+    ("curriculo", "Currículo", ABAS_FICHA[0]),
+    ("avaliacao", "Avaliação completa", ABAS_FICHA[0]),
+    ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[1]),
+    ("contrato_arquivo", "Contrato assinado", ABAS_FICHA[3]),
+]
+
+
+def nome_anexo(r, valor):
+    """Nome original do arquivo, sem o prefixo de armazenamento e o id do prestador."""
+    nome = valor.split(":", 1)[1] if valor.startswith(("local:", "gcs:", "fs:")) else valor
+    nome = nome.rsplit("/", 1)[-1]
+    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_contrato_", f"{r['id']}_"):
+        if nome.startswith(prefixo):
+            return nome[len(prefixo):]
+    return nome
+
+
+def aba_anexos(r):
+    """Todos os arquivos anexados no processo, num lugar só. O conteúdo só é lido ao clicar em baixar."""
+    anexados = [(c, doc, etapa) for c, doc, etapa in ANEXOS_PROCESSO if r[c]]
+    st.caption(f"{len(anexados)} de {len(ANEXOS_PROCESSO)} documentos anexados. "
+               "Para trocar um arquivo, anexe de novo na etapa indicada.")
+    for campo, doc, etapa in ANEXOS_PROCESSO:
+        valor = r[campo]
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([2, 2.2, 1.3], vertical_alignment="center")
+            c1.markdown(f"**{'📄' if valor else '▫️'} {doc}**")
+            c1.caption(etapa)
+            if not valor:
+                c2.caption("Não anexado")
+            elif valor.startswith(("local:", "gcs:", "fs:")):
+                nome = nome_anexo(r, valor)
+                c2.markdown(f"`{nome}`")
+                c3.download_button("⬇️ Baixar", lambda v=valor: (ler_arquivo(v) or ("", b""))[1], nome,
+                                   key=f"anx_{campo}_{r['id']}", width="stretch", on_click="ignore")
+            else:
+                c2.caption("Arquivo no Google Drive")
+                c3.link_button("Abrir", valor, width="stretch")
+    locais = [(c, doc) for c, doc, _ in anexados if r[c].startswith(("local:", "gcs:", "fs:"))]
+    if len(locais) > 1:
+        def zip_todos():
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for c, doc in locais:
+                    arq = ler_arquivo(r[c])
+                    if arq:
+                        z.writestr(f"{doc} - {nome_anexo(r, r[c])}", arq[1])
+            return buf.getvalue()
+        nome_zip = re.sub(r"[^a-z0-9]+", "_", _sem_acento(r["nome"])).strip("_") or "prestador"
+        st.download_button("⬇️ Baixar todos (.zip)", zip_todos, f"anexos_{nome_zip}.zip", type="primary",
+                           key=f"anx_zip_{r['id']}", on_click="ignore")
 
 
 def checklist_etapas(r):
