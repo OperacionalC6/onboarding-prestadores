@@ -44,7 +44,7 @@ CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 VAGAS = ["Operador EGV", "Gerente de Negócios", "Gestor Comercial"]
 VAGAS_ACEITAM_MEI = {"Operador EGV"}  # nas demais vagas o CNPJ não pode ser MEI
 STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
-STATUS_TRIAGEM = ("Em Triagem", "Banco de Espera", "Reprovado")  # ficam na coluna Triagem do quadro
+STATUS_TRIAGEM = ("Em Triagem", "Reprovado")  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
@@ -1589,7 +1589,7 @@ def menu_rh():
 
 def kpis(df):
     ativos = int((df["status_final"] == STATUS_ATIVO).sum()) if not df.empty else 0
-    em_ent = int((df["status_entrevista"] == "Em Entrevista").sum()) if not df.empty else 0
+    em_ent = int(df["status_entrevista"].isin(["Em Entrevista", "Banco de Espera"]).sum()) if not df.empty else 0
     em_tri = int((df["status_entrevista"] == "Em Triagem").sum()) if not df.empty else 0
     onb = int(df.apply(lambda r: fase(r) == 2, axis=1).sum()) if not df.empty else 0
     pend_cnpj = int(df.apply(lambda r: fase(r) == 2 and bool(r["form_enviado_em"]) and cnpj_pendente(r),
@@ -1639,7 +1639,7 @@ def quadro_kanban():
     vagas = ["Todas as vagas"] + sorted(v for v in df["vaga"].unique() if v)
     vaga = f2.selectbox("Vaga", vagas, key="kb_vaga")
     f3.write("")
-    mostrar_fora = f3.toggle("Banco de espera e reprovados", key="kb_fora")
+    mostrar_fora = f3.toggle("Mostrar reprovados", key="kb_fora")
 
     if busca:
         b = busca.strip().lower()
@@ -1647,7 +1647,7 @@ def quadro_kanban():
     if vaga != "Todas as vagas":
         df = df[df["vaga"] == vaga]
     if not mostrar_fora:
-        df = df[~df["status_entrevista"].isin(["Banco de Espera", "Reprovado"])]
+        df = df[df["status_entrevista"] != "Reprovado"]
 
     df = df.assign(_col=df.apply(coluna_kanban, axis=1) if not df.empty else [])
     st.caption("Cada card fica na primeira etapa pendente. As barrinhas mostram as etapas 2 a 6: "
