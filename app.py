@@ -69,13 +69,13 @@ COLUNAS = [
     # Etapa 1
     "nome", "email", "telefone", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
     "avaliacao_nota", "avaliacao_resumo", "avaliacao",
-    # Etapa 2
+    # Etapa 3 (formulário do candidato: dados e CNPJ)
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
     "cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
     "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
     "cnpj_apto", "cartao_cnpj", "form_enviado_em",
-    # Etapa 3
+    # Etapa 2 (validação de documentos)
     "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em",
     # Etapa 4
     "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
@@ -90,8 +90,8 @@ COLUNAS = [
 
 ETAPAS = {
     1: "1. Entrevistas",
-    2: "2. Formalização / CNPJ",
-    3: "3. Validação de documentos",
+    2: "2. Validação de documentos",
+    3: "3. Formalização / CNPJ",
     4: "4. Assinatura do contrato",
     5: "5. Acessos (TI)",
     6: "6. Integração / Onboarding",
@@ -908,8 +908,8 @@ def cnpj_pendente(r):
 def etapas_concluidas(r):
     """Situação de cada etapa de onboarding. As etapas correm em paralelo, em qualquer ordem."""
     return {
-        2: bool(r["form_enviado_em"]) and not cnpj_pendente(r),
-        3: r["doc_status"] in DOCS_LIBERADAS,
+        2: r["doc_status"] in DOCS_LIBERADAS,
+        3: bool(r["form_enviado_em"]) and not cnpj_pendente(r),
         4: r["contrato_assinado"] == SIM,
         5: all(resolvido(r[k]) for k in ITENS_ACESSOS),
         6: bool(r["padrinho"]) and all(resolvido(r[k]) for k in ("onb_material", "onb_metas", "onb_cultura")),
@@ -917,7 +917,7 @@ def etapas_concluidas(r):
 
 
 ITENS_ACESSOS = ("ti_email", "ti_looker", "ti_propostas", "mat_computador", "mat_celular", "mat_uniforme")
-NOMES_CURTOS = {2: "CNPJ/Formulário", 3: "Documentos", 4: "Contrato", 5: "Acessos", 6: "Integração"}
+NOMES_CURTOS = {2: "Documentos", 3: "CNPJ/Formulário", 4: "Contrato", 5: "Acessos", 6: "Integração"}
 
 
 def pendencias(r):
@@ -1065,8 +1065,8 @@ CSS_CANDIDATO = """
 KANBAN = [
     ("triagem", "🔎 Triagem", "#64748B"),
     ("entrevista", "🗣️ Entrevista", "#6366F1"),
-    (2, "📝 Formalização", "#0EA5E9"),
-    (3, "📂 Documentos", "#14B8A6"),
+    (2, "📂 Validação de documentos", "#14B8A6"),
+    (3, "📝 Formalização", "#0EA5E9"),
     (4, "✍️ Contrato", "#F59E0B"),
     (5, "💻 Acessos e materiais", "#8B5CF6"),
     (6, "🤝 Integração", "#EC4899"),
@@ -1135,24 +1135,24 @@ def quem_responde(r):
     itens = [(1, "Entrevista", "ok", "Aprovado na entrevista.")]
 
     if feitas[2]:
-        itens.append((2, "Seus dados e CNPJ", "ok", "Dados pessoais e CNPJ recebidos."))
+        itens.append((2, "Documentos", "ok", "Documentos aprovados."))
+    elif r["doc_status"] == "Reprovada":
+        itens.append((2, "Documentos", "voce", f"Ajuste pedido pelo RH: {r['doc_obs'] or 'fale com o RH.'}"))
     elif not form:
-        itens.append((2, "Seus dados e CNPJ", "voce", "Preencha o formulário abaixo com seus dados e o CNPJ."))
-    elif r["possui_cnpj"] != SIM:
-        itens.append((2, "Seus dados e CNPJ", "voce", "Abra o CNPJ e informe o número aqui."))
-    elif r["cnpj_apto"] != SIM:
-        itens.append((2, "Seus dados e CNPJ", "voce", "Regularize o CNPJ e valide de novo."))
+        itens.append((2, "Documentos", "voce", "Envie seus documentos junto com o formulário."))
     else:
-        itens.append((2, "Seus dados e CNPJ", "nos", "Estamos conferindo o seu Cartão CNPJ."))
+        itens.append((2, "Documentos", "nos", "Estamos conferindo os seus documentos."))
 
     if feitas[3]:
-        itens.append((3, "Documentos", "ok", "Documentos aprovados."))
-    elif r["doc_status"] == "Reprovada":
-        itens.append((3, "Documentos", "voce", f"Ajuste pedido pelo RH: {r['doc_obs'] or 'fale com o RH.'}"))
+        itens.append((3, "Seus dados e CNPJ", "ok", "Dados pessoais e CNPJ recebidos."))
     elif not form:
-        itens.append((3, "Documentos", "voce", "Envie seus documentos junto com o formulário."))
+        itens.append((3, "Seus dados e CNPJ", "voce", "Preencha o formulário abaixo com seus dados e o CNPJ."))
+    elif r["possui_cnpj"] != SIM:
+        itens.append((3, "Seus dados e CNPJ", "voce", "Abra o CNPJ e informe o número aqui."))
+    elif r["cnpj_apto"] != SIM:
+        itens.append((3, "Seus dados e CNPJ", "voce", "Regularize o CNPJ e valide de novo."))
     else:
-        itens.append((3, "Documentos", "nos", "Estamos conferindo os seus documentos."))
+        itens.append((3, "Seus dados e CNPJ", "nos", "Estamos conferindo o seu Cartão CNPJ."))
 
     if feitas[4]:
         itens.append((4, "Contrato", "ok", "Contrato assinado."))
@@ -1372,7 +1372,7 @@ def campos_endereco(r, k, erros=None):
 
 
 def formulario_candidato(r, prefixo="cand"):
-    """Formulário da Etapa 2. Usado pelo candidato e, no painel, pelo RH em nome dele."""
+    """Formulário da Etapa 3. Usado pelo candidato e, no painel, pelo RH em nome dele."""
     pid = r["id"]
 
     def k(nome):
@@ -1493,7 +1493,7 @@ def formulario_candidato(r, prefixo="cand"):
             declarado = res["status"] != "ok" or bool(divergente)
             if divergente:
                 fonte = f"Declaração do candidato ({', '.join(divergente)} diferente da consulta {res['fonte']})"
-                st.info("Diferente da consulta automática: confira no Cartão CNPJ na Etapa 3." if rh else
+                st.info("Diferente da consulta automática: confira no Cartão CNPJ na Etapa 2." if rh else
                         "Sua resposta é diferente da consulta automática. Tudo bem: o RH vai conferir no Cartão CNPJ.")
 
             apto, pend = avaliar_regras(is_mei, tem_cnae, situacao, r["vaga"])
@@ -1527,7 +1527,7 @@ def formulario_candidato(r, prefixo="cand"):
     st.divider()
     rotulo = "Enviar dados e documentos" if apto else "Enviar dados pessoais"
     if prefixo != "cand":
-        rotulo = "Salvar Etapa 2"
+        rotulo = "Salvar Etapa 3"
     for e in st.session_state.get(k("erros_gerais"), []):
         st.error(e)
     if st.button(rotulo, type="primary", key=k("enviar")):
@@ -1567,7 +1567,7 @@ def formulario_candidato(r, prefixo="cand"):
         if prefixo == "cand":
             st.session_state["_envio_cand"] = {"apto": apto, "possui": possui}
         else:
-            avisar("Etapa 2 salva." + ir_para_proxima(pid, 1, True))
+            avisar("Etapa 3 salva." + ir_para_proxima(pid, 2, True))
         st.rerun()
 
 
@@ -1959,7 +1959,7 @@ def situacao_ficha(r):
 
 ABA_RESUMO = "📋 Resumo"
 ABA_ANEXOS = "📎 Anexos"
-ABAS_FICHA = ["1 · Triagem / Entrevista", "2 · Formalização / CNPJ", "3 · Documentos", "4 · Contrato",
+ABAS_FICHA = ["1 · Triagem / Entrevista", "2 · Validação de Documentos", "3 · Formalização / CNPJ", "4 · Contrato",
               "5 · Acessos e materiais", "6 · Integração", "7 · Início"]
 # status: (ícone, cor da borda, cor de fundo, legenda)
 CORES_STATUS = {
@@ -1975,18 +1975,20 @@ def status_etapas(r):
     feitas = etapas_concluidas(r)
     form = bool(r["form_enviado_em"])
     st1 = {"Aprovado": "ok", "Reprovado": "erro"}.get(r["status_entrevista"], "andamento")
-    if feitas[2]:
-        st2 = "ok"
-    elif form and r["possui_cnpj"] == SIM and r["cnpj_apto"] != SIM:
-        st2 = "erro"  # CNPJ fora das regras (MEI, CNAE ou situação)
-    else:
-        st2 = "andamento" if form else "todo"
+    # Etapa 2: validação de documentos pelo RH (com o check do TJ)
     if r["doc_status"] == DOC_APROVADA:
-        st3 = "ok"
+        st2 = "ok"
     elif r["doc_status"] == "Reprovada":
-        st3 = "erro"
+        st2 = "erro"
     else:
-        st3 = "andamento" if form or r["doc_status"] == DOC_APROVADA_PEND else "todo"
+        st2 = "andamento" if form or r["tj_check"] or r["doc_status"] == DOC_APROVADA_PEND else "todo"
+    # Etapa 3: formulário do candidato com dados e CNPJ
+    if feitas[3]:
+        st3 = "ok"
+    elif form and r["possui_cnpj"] == SIM and r["cnpj_apto"] != SIM:
+        st3 = "erro"  # CNPJ fora das regras (MEI, CNAE ou situação)
+    else:
+        st3 = "andamento" if form else "todo"
     st4 = "ok" if feitas[4] else ("andamento" if r["contrato_enviado"] == SIM else "todo")
     ti = [resolvido(r[k]) for k in ITENS_ACESSOS]
     st5 = "ok" if all(ti) else ("andamento" if any(ti) else "todo")
@@ -2098,9 +2100,9 @@ def ficha_prestador(r):
     with abas[1]:
         aba_entrevista(r)
     with abas[2]:
-        aba_formalizacao(r)
-    with abas[3]:
         aba_documentos(r)
+    with abas[3]:
+        aba_formalizacao(r)
     with abas[4]:
         aba_contrato(r)
     with abas[5]:
@@ -2117,8 +2119,8 @@ def ficha_prestador(r):
 ANEXOS_PROCESSO = [
     ("curriculo", "Currículo", ABAS_FICHA[0]),
     ("avaliacao", "Avaliação completa", ABAS_FICHA[0]),
-    ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[1]),
-    ("tj_arquivo", "Check de processos no TJ", ABAS_FICHA[2]),
+    ("tj_arquivo", "Check de processos no TJ", ABAS_FICHA[1]),
+    ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[2]),
     ("contrato_arquivo", "Contrato assinado", ABAS_FICHA[3]),
 ]
 
@@ -2185,6 +2187,10 @@ def checklist_etapas(r):
         [(r["status_entrevista"] == "Aprovado", "Entrevista aprovada", r["status_entrevista"]),
          (bool(r["curriculo"]), "Currículo", arq(r["curriculo"])),
          (bool(r["avaliacao_nota"]), "Avaliação de perfil", f"nota {r['avaliacao_nota']}" if r["avaliacao_nota"] else "")],
+        [(bool(r["tj_check"]), "Check de processos no TJ", r["tj_check"] or "Pendente"),
+         (bool(r["tj_arquivo"]), "PDF da consulta no TJ", arq(r["tj_arquivo"])),
+         (r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
+         (r["doc_status"] == DOC_APROVADA, "Aprovação definitiva", r["doc_obs"])],
         [(bool(r["form_enviado_em"]), "Formulário enviado", data_br(r["form_enviado_em"])),
          (bool(r["cpf"]) and bool(r["endereco"]), "Dados pessoais e endereço", r["cidade"] and f"{r['cidade']}/{r['uf']}"),
          (r["possui_cnpj"] == SIM, "CNPJ", cnpj_txt),
@@ -2192,10 +2198,6 @@ def checklist_etapas(r):
           (r["regime_tributario"] or "MEI: " + (r["is_mei"] or "—")) + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
           if r["possui_cnpj"] == SIM else ""),
          (bool(r["cartao_cnpj"]), "Cartão CNPJ", arq(r["cartao_cnpj"]))],
-        [(bool(r["tj_check"]), "Check de processos no TJ", r["tj_check"] or "Pendente"),
-         (bool(r["tj_arquivo"]), "PDF da consulta no TJ", arq(r["tj_arquivo"])),
-         (r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
-         (r["doc_status"] == DOC_APROVADA, "Aprovação definitiva", r["doc_obs"])],
         [(r["contrato_enviado"] == SIM, "Contrato enviado", ""),
          (r["contrato_assinado"] == SIM, "Contrato assinado", data_br(r["contrato_data"])),
          (bool(r["contrato_arquivo"]), "Contrato assinado anexado", arq(r["contrato_arquivo"]))],
@@ -2344,7 +2346,7 @@ def aba_formalizacao(r):
     if r["form_enviado_em"]:
         situ = "✅ CNPJ regular" if not cnpj_pendente(r) else (
             "⚠️ Sem CNPJ" if r["possui_cnpj"] == "Não" else
-            "🔎 CNPJ declarado, conferir na Etapa 3" if cnpj_declarado(r) else "⚠️ CNPJ fora das regras")
+            "🔎 CNPJ declarado, conferir na Etapa 2" if cnpj_declarado(r) else "⚠️ CNPJ fora das regras")
         (st.warning if cnpj_pendente(r) else st.success)(f"Formulário enviado em {data_br(r['form_enviado_em'])} · {situ}")
         resumo_declaracao_cnpj(r)
     else:
@@ -2354,7 +2356,7 @@ def aba_formalizacao(r):
     st.caption("Copie a mensagem abaixo e mande por WhatsApp ou e-mail.")
     st.code(mensagem_acesso(r), language=None)
 
-    with st.expander("✏️ Preencher ou corrigir a Etapa 2 pelo candidato", expanded=not r["form_enviado_em"]):
+    with st.expander("✏️ Preencher ou corrigir a Etapa 3 pelo candidato", expanded=not r["form_enviado_em"]):
         formulario_candidato(r, prefixo="rh")
 
 
@@ -2372,7 +2374,7 @@ def resumo_declaracao_cnpj(r):
         c1.markdown(f"Enquadramento\n\n**{regime}**")
         c2.markdown(f"CNAE {fmt_cnae(CNAE_EXIGIDO)}\n\n**{r['tem_cnae'] or '-'}**")
         c3.markdown(f"Origem\n\n**{origem}**")
-        st.caption(fonte + (" · Confira no Cartão CNPJ na Etapa 3." if cnpj_declarado(r) else ""))
+        st.caption(fonte + (" · Confira no Cartão CNPJ na Etapa 2." if cnpj_declarado(r) else ""))
 
 
 def validacao_manual_cnpj(r):
@@ -2396,13 +2398,14 @@ def validacao_manual_cnpj(r):
                      disabled=not (ativa and nao_mei and cnae)):
             atualizar(r["id"], is_mei=r["is_mei"] if aceita_mei(r["vaga"]) else "Não", tem_cnae=SIM, situacao_cnpj="ATIVA", cnpj_apto=SIM,
                       fonte_validacao=f"Conferido pelo RH no cartão CNPJ em {data_br(agora())}")
-            avisar("CNPJ validado pelo RH." + ir_para_proxima(r["id"], 2, False))
+            avisar("CNPJ validado pelo RH." + ir_para_proxima(r["id"], 1, False))
             st.rerun()
 
 
 def aba_documentos(r):
     if not r["form_enviado_em"]:
-        st.warning("Ainda não há dados da Etapa 2 para conferir.")
+        st.warning("O candidato ainda não enviou os dados (Etapa 3). O check do TJ já pode ser registrado.")
+        bloco_tj(r)
         return
     c1, c2 = st.columns(2)
     with c1, st.container(border=True):
@@ -2445,7 +2448,7 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
                 "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary", disabled=sem_tj):
             atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
-            avisar("Documentação aprovada com CNPJ pendente." + ir_para_proxima(r["id"], 2, True))
+            avisar("Documentação aprovada com CNPJ pendente." + ir_para_proxima(r["id"], 1, True))
             st.rerun()
     else:
         if r["doc_status"] == DOC_APROVADA_PEND:
@@ -2453,14 +2456,14 @@ def aba_documentos(r):
         if r["doc_status"] != DOC_APROVADA and b1.button(
                 "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary", disabled=sem_tj):
             atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
-            avisar("Documentação aprovada." + ir_para_proxima(r["id"], 2, True))
+            avisar("Documentação aprovada." + ir_para_proxima(r["id"], 1, True))
             st.rerun()
     if r["doc_status"] not in DOCS_LIBERADAS and b2.button("❌ Reprovar / pedir ajuste", key=f"reprova_{r['id']}"):
         if not obs.strip():
             st.error("Descreva o ajuste necessário.")
         else:
             atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
-            avisar("Ajuste solicitado ao candidato." + ir_para_proxima(r["id"], 2, True), "📝")
+            avisar("Ajuste solicitado ao candidato." + ir_para_proxima(r["id"], 1, True), "📝")
             st.rerun()
 
 
