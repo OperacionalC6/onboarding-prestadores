@@ -375,6 +375,24 @@ def dados_check_tj(r):
     return {k: v for k, v in dados.items() if v}
 
 
+LIMITE_ANEXOS_EMAIL = 20 * 1024 * 1024  # o Gmail recusa mensagens acima de 25 MB
+
+
+def anexar_documentos_tj(msg, r):
+    """Anexa ao e-mail do check do TJ a CNH/RG com CPF e o Cartão CNPJ que o candidato enviou."""
+    import mimetypes
+
+    total = 0
+    for campo, rotulo in (("doc_identidade", "CNH ou RG com CPF"), ("cartao_cnpj", "Cartão CNPJ")):
+        arq = ler_arquivo(r[campo]) if r[campo] else None
+        if not arq or total + len(arq[1]) > LIMITE_ANEXOS_EMAIL:
+            continue
+        total += len(arq[1])
+        nome = nome_anexo(r, r[campo])
+        tipo = (mimetypes.guess_type(nome)[0] or "application/octet-stream").split("/")
+        msg.add_attachment(arq[1], maintype=tipo[0], subtype=tipo[1], filename=f"{rotulo} - {nome}")
+
+
 def enviar_resumo(r, mudancas, check_tj=False):
     import smtplib
     from email.message import EmailMessage
@@ -401,7 +419,8 @@ def enviar_resumo(r, mudancas, check_tj=False):
         bloco_tj = ('<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
                     'margin:0 auto 12px;padding:12px 14px;border:1px solid #FCD34D;background:#FFFBEB;border-radius:8px;">'
                     "<b>⚖️ Check de processos no TJ</b><br>O candidato enviou os dados. Tatiana, por favor faça a "
-                    "consulta de ações judiciais e devolva o PDF ao RH para anexar na ficha."
+                    "consulta de ações judiciais e devolva o PDF ao RH para anexar na ficha. "
+                    "Os documentos que o candidato enviou (CNH ou RG com CPF e Cartão CNPJ) seguem em anexo, quando enviados."
                     f'<table style="margin-top:8px;border-collapse:collapse;">{linhas}</table></div>')
     msg.set_content(texto + "\n\nAbra este e-mail em um leitor com HTML para ver o resumo completo.")
     lista = "".join(f"<li>{esc(m)}</li>" for m in mudancas)
@@ -410,6 +429,8 @@ def enviar_resumo(r, mudancas, check_tj=False):
         '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
         f'margin:0 auto 12px;"><b>O que mudou agora:</b><ul style="margin:6px 0 0;">{lista}</ul></div>'
         + onepage_html(r), subtype="html")
+    if check_tj:
+        anexar_documentos_tj(msg, r)
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
         smtp.login(cfg_email("remetente"), str(cfg_email("senha_app")).replace(" ", ""))
         smtp.send_message(msg)
