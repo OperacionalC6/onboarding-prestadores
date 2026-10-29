@@ -76,7 +76,7 @@ COLUNAS = [
     "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
     "cnpj_apto", "cartao_cnpj", "form_enviado_em",
     # Etapa 2 (validação de documentos)
-    "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em",
+    "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em", "tj_email_em",
     # Etapa 4
     "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
     # Etapa 5
@@ -344,8 +344,23 @@ def notificar_mudanca_etapa(antes, depois):
     try:
         enviar_resumo(depois, mudancas, check_tj)
         st.session_state["_email_ok"] = True
+        if check_tj:
+            _marcar_email_tj(depois["id"])
     except Exception as e:
         st.session_state["_email_erro"] = str(e)
+
+
+def _marcar_email_tj(pid):
+    """Registra quando o e-mail do check do TJ saiu, sem disparar outra notificação."""
+    df = carregar()
+    i = df.index[df["id"] == pid]
+    if len(i) == 0:
+        return
+    df.loc[i, "tj_email_em"] = agora()
+    if usa_firestore():
+        _gravar_firestore(df.loc[i[0]].to_dict())
+    else:
+        salvar(df)
 
 
 def dados_check_tj(r):
@@ -2487,7 +2502,20 @@ def bloco_tj(r):
                 mostrar_arquivo(r["tj_arquivo"], "PDF do TJ", key=f"dl_tj_{r['id']}")
             arq = st.file_uploader("Substituir PDF da consulta" if r["tj_arquivo"] else "PDF da consulta de processos",
                                    type=["pdf", "png", "jpg", "jpeg"], key=f"tj_arq_{versao}")
-        if st.button("Salvar check do TJ", key=f"tj_salvar_{r['id']}"):
+        b1, b2 = st.columns(2)
+        if r["form_enviado_em"] and usa_email():
+            if r["tj_email_em"]:
+                b2.caption(f"Dados enviados à Tatiana em {data_br(r['tj_email_em'])}.")
+            if b2.button("📧 Reenviar dados para a Tatiana" if r["tj_email_em"] else "📧 Enviar dados para a Tatiana",
+                         key=f"tj_email_{r['id']}"):
+                try:
+                    enviar_resumo(r, ["Envio pelo RH: dados para o check de processos no TJ"], check_tj=True)
+                    _marcar_email_tj(r["id"])
+                    avisar("E-mail do check do TJ enviado para a Tatiana, com o comercial em cópia.", "📧")
+                except Exception as e:
+                    avisar(f"Não consegui enviar o e-mail: {e}", "⚠️")
+                st.rerun()
+        if b1.button("Salvar check do TJ", key=f"tj_salvar_{r['id']}"):
             valor = TJ_OPCOES.get(escolha, "")
             campos = {"tj_check": valor}
             if valor != r["tj_check"]:
