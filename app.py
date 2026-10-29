@@ -366,13 +366,16 @@ def _marcar_email_tj(pid):
 
 
 def dados_check_tj(r):
-    """Dados que a Tatiana usa para consultar processos no TJ."""
-    nasc = date.fromisoformat(r["data_nascimento"]).strftime("%d/%m/%Y") if r["data_nascimento"] else ""
-    dados = {"Nome completo": r["nome_completo"] or r["nome"], "CPF": fmt_cpf(r["cpf"]), "RG": r["rg"],
-             "Data de nascimento": nasc, "Endereço": r["endereco"]}
-    if r["possui_cnpj"] == SIM:
-        dados.update({"CNPJ": fmt_cnpj(r["cnpj"]), "Razão social": r["razao_social"]})
-    return {k: v for k, v in dados.items() if v}
+    """Quadro do topo do e-mail da Tatiana e do Comercial. Nome da Carteira fica em branco para eles preencherem."""
+    return {
+        "Nome da Carteira": "",
+        "Nome completo": r["nome_completo"] or r["nome"],
+        "CPF": fmt_cpf(r["cpf"]),
+        "E-mail": r["email"],
+        "Celular c/ DDD": fmt_tel(r["telefone"]),
+        "Primeiro acesso à plataforma": "Sim",
+        "Já foi vendedor / lojista": "Não",
+    }
 
 
 LIMITE_ANEXOS_EMAIL = 20 * 1024 * 1024  # o Gmail recusa mensagens acima de 25 MB
@@ -411,16 +414,18 @@ def enviar_resumo(r, mudancas, check_tj=False):
     bloco_tj = ""
     if check_tj:
         dados = dados_check_tj(r)
-        texto = ("O candidato enviou os dados. Tatiana, por favor faça o check de processos no TJ e "
-                 "devolva o PDF da consulta ao RH.\n" + "\n".join(f"{k}: {v}" for k, v in dados.items())
+        texto = ("Check de processos no TJ\nO candidato enviou os dados. Tatiana, por favor faça a consulta de "
+                 "ações judiciais e devolva o PDF ao RH para anexar na ficha.\n\n"
+                 + "\n".join(f"{k}: {v}" for k, v in dados.items())
                  + "\n\n" + texto)
         linhas = "".join(f'<tr><td style="padding:3px 12px 3px 0;color:#6B7280;">{esc(k)}</td>'
-                         f"<td style=\"padding:3px 0;\"><b>{esc(v)}</b></td></tr>" for k, v in dados.items())
+                         + (f"<td style=\"padding:3px 0;\"><b>{esc(v)}</b></td></tr>" if v else  # campo para preencher
+                          '<td style="padding:3px 0;"><span style="display:inline-block;width:220px;'
+                          'border-bottom:1px solid #9CA3AF;">&nbsp;</span></td></tr>') for k, v in dados.items())
         bloco_tj = ('<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
                     'margin:0 auto 12px;padding:12px 14px;border:1px solid #FCD34D;background:#FFFBEB;border-radius:8px;">'
                     "<b>⚖️ Check de processos no TJ</b><br>O candidato enviou os dados. Tatiana, por favor faça a "
-                    "consulta de ações judiciais e devolva o PDF ao RH para anexar na ficha. "
-                    "Os documentos que o candidato enviou (CNH ou RG com CPF e Cartão CNPJ) seguem em anexo, quando enviados."
+                    "consulta de ações judiciais e devolva o PDF ao RH para anexar na ficha."
                     f'<table style="margin-top:8px;border-collapse:collapse;">{linhas}</table></div>')
     msg.set_content(texto + "\n\nAbra este e-mail em um leitor com HTML para ver o resumo completo.")
     lista = "".join(f"<li>{esc(m)}</li>" for m in mudancas)
