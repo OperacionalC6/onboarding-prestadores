@@ -76,7 +76,7 @@ COLUNAS = [
     "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
     "cnpj_apto", "cartao_cnpj", "form_enviado_em",
     # Etapa 3
-    "doc_status", "doc_obs", "doc_validado_em",
+    "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em",
     # Etapa 4
     "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
     # Etapa 5
@@ -283,7 +283,7 @@ def atualizar(pid, **campos):
     notificar_mudanca_etapa(antes, depois)
 
 
-CAMPOS_ANEXO = ("curriculo", "avaliacao", "cartao_cnpj", "contrato_arquivo")
+CAMPOS_ANEXO = ("curriculo", "avaliacao", "cartao_cnpj", "tj_arquivo", "contrato_arquivo")
 
 
 def excluir(pid):
@@ -315,6 +315,8 @@ def apagar_anexo(valor):
 # E-MAIL COM O RESUMO A CADA MUDANÇA DE ETAPA (Gmail com senha de app)
 # =============================================================================
 DESTINATARIOS_PADRAO = ["financeirolancefinanciamentos@gmail.com", "operacionalc6ehs@gmail.com"]
+COPIA_PADRAO = ["comercial@lancefinanciamentos.com.br"]  # em cópia em todos os e-mails
+COPIA_TJ_PADRAO = ["tatilima33@hotmail.com"]  # só no e-mail de entrada na validação, para o check no TJ
 
 
 def cfg_email(chave, padrao=None):
@@ -337,27 +339,57 @@ def notificar_mudanca_etapa(antes, depois):
                 for nome, a, d in zip(ABAS_FICHA, st_antes, st_depois) if a != d]
     if not mudancas:
         return
+    # O candidato acabou de enviar os dados: a Tatiana recebe junto para fazer o check de processos no TJ.
+    check_tj = not antes["form_enviado_em"] and bool(depois["form_enviado_em"])
     try:
-        enviar_resumo(depois, mudancas)
+        enviar_resumo(depois, mudancas, check_tj)
         st.session_state["_email_ok"] = True
     except Exception as e:
         st.session_state["_email_erro"] = str(e)
 
 
-def enviar_resumo(r, mudancas):
+def dados_check_tj(r):
+    """Dados que a Tatiana usa para consultar processos no TJ."""
+    nasc = date.fromisoformat(r["data_nascimento"]).strftime("%d/%m/%Y") if r["data_nascimento"] else ""
+    dados = {"Nome completo": r["nome_completo"] or r["nome"], "CPF": fmt_cpf(r["cpf"]), "RG": r["rg"],
+             "Data de nascimento": nasc, "Endereço": r["endereco"]}
+    if r["possui_cnpj"] == SIM:
+        dados.update({"CNPJ": fmt_cnpj(r["cnpj"]), "Razão social": r["razao_social"]})
+    return {k: v for k, v in dados.items() if v}
+
+
+def enviar_resumo(r, mudancas, check_tj=False):
     import smtplib
     from email.message import EmailMessage
 
     destinos = list(cfg_email("destinatarios", DESTINATARIOS_PADRAO))
+    copia = list(cfg_email("copia", COPIA_PADRAO)) + (list(cfg_email("copia_tj", COPIA_TJ_PADRAO)) if check_tj else [])
     msg = EmailMessage()
     etapa = mudancas[0].split(":")[0] + (f" (+{len(mudancas) - 1})" if len(mudancas) > 1 else "")
-    msg["Subject"] = f"Onboarding · {r['nome']} · {etapa} atualizada"
+    msg["Subject"] = (f"Onboarding · {r['nome']} · dados para check de processos no TJ" if check_tj
+                      else f"Onboarding · {r['nome']} · {etapa} atualizada")
     msg["From"] = f"Onboarding de Prestadores <{cfg_email('remetente')}>"
     msg["To"] = ", ".join(destinos)
+    if copia:
+        msg["Cc"] = ", ".join(copia)
     texto = "O que mudou:\n" + "\n".join(f"- {m}" for m in mudancas)
+    bloco_tj = ""
+    if check_tj:
+        dados = dados_check_tj(r)
+        texto = ("O candidato enviou os dados. Tatiana, por favor faça o check de processos no TJ e "
+                 "devolva o PDF da consulta ao RH.\n" + "\n".join(f"{k}: {v}" for k, v in dados.items())
+                 + "\n\n" + texto)
+        linhas = "".join(f'<tr><td style="padding:3px 12px 3px 0;color:#6B7280;">{esc(k)}</td>'
+                         f"<td style=\"padding:3px 0;\"><b>{esc(v)}</b></td></tr>" for k, v in dados.items())
+        bloco_tj = ('<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
+                    'margin:0 auto 12px;padding:12px 14px;border:1px solid #FCD34D;background:#FFFBEB;border-radius:8px;">'
+                    "<b>⚖️ Check de processos no TJ</b><br>O candidato enviou os dados. Tatiana, por favor faça a "
+                    "consulta de ações judiciais e devolva o PDF ao RH para anexar na ficha."
+                    f'<table style="margin-top:8px;border-collapse:collapse;">{linhas}</table></div>')
     msg.set_content(texto + "\n\nAbra este e-mail em um leitor com HTML para ver o resumo completo.")
     lista = "".join(f"<li>{esc(m)}</li>" for m in mudancas)
     msg.add_alternative(
+        bloco_tj +
         '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;max-width:720px;'
         f'margin:0 auto 12px;"><b>O que mudou agora:</b><ul style="margin:6px 0 0;">{lista}</ul></div>'
         + onepage_html(r), subtype="html")
@@ -2086,6 +2118,7 @@ ANEXOS_PROCESSO = [
     ("curriculo", "Currículo", ABAS_FICHA[0]),
     ("avaliacao", "Avaliação completa", ABAS_FICHA[0]),
     ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[1]),
+    ("tj_arquivo", "Check de processos no TJ", ABAS_FICHA[2]),
     ("contrato_arquivo", "Contrato assinado", ABAS_FICHA[3]),
 ]
 
@@ -2094,7 +2127,7 @@ def nome_anexo(r, valor):
     """Nome original do arquivo, sem o prefixo de armazenamento e o id do prestador."""
     nome = valor.split(":", 1)[1] if valor.startswith(("local:", "gcs:", "fs:")) else valor
     nome = nome.rsplit("/", 1)[-1]
-    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_contrato_", f"{r['id']}_"):
+    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_contrato_", f"{r['id']}_"):
         if nome.startswith(prefixo):
             return nome[len(prefixo):]
     return nome
@@ -2159,7 +2192,9 @@ def checklist_etapas(r):
           (r["regime_tributario"] or "MEI: " + (r["is_mei"] or "—")) + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
           if r["possui_cnpj"] == SIM else ""),
          (bool(r["cartao_cnpj"]), "Cartão CNPJ", arq(r["cartao_cnpj"]))],
-        [(r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
+        [(bool(r["tj_check"]), "Check de processos no TJ", r["tj_check"] or "Pendente"),
+         (bool(r["tj_arquivo"]), "PDF da consulta no TJ", arq(r["tj_arquivo"])),
+         (r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
          (r["doc_status"] == DOC_APROVADA, "Aprovação definitiva", r["doc_obs"])],
         [(r["contrato_enviado"] == SIM, "Contrato enviado", ""),
          (r["contrato_assinado"] == SIM, "Contrato assinado", data_br(r["contrato_data"])),
@@ -2389,7 +2424,13 @@ def aba_documentos(r):
         mostrar_arquivo(r["cartao_cnpj"], "Cartão CNPJ", key=f"dl_cartao_{r['id']}")
     if cnpj_declarado(r):
         validacao_manual_cnpj(r)
+    bloco_tj(r)
     st.write(f"Status da documentação: **{r['doc_status'] or 'Pendente'}**")
+    sem_tj = not r["tj_check"]
+    if sem_tj:
+        st.info("Registre o check de processos no TJ acima para liberar a aprovação da documentação.")
+    elif r["tj_check"] == "Possui processos":
+        st.warning("O check do TJ encontrou processos. Avalie antes de aprovar.")
     obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"], key=f"docobs_{r['id']}")
     b1, b2 = st.columns(2)
     if cnpj_pendente(r):
@@ -2402,7 +2443,7 @@ def aba_documentos(r):
         st.warning(f"O candidato {motivo}. Você pode **aprovar com o CNPJ pendente** e seguir com as outras etapas. "
                    "Quando o CNPJ for regularizado, volte aqui para a aprovação definitiva.")
         if r["doc_status"] != DOC_APROVADA_PEND and b1.button(
-                "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary"):
+                "⏭️ Aprovar com CNPJ pendente", key=f"aprova_pend_{r['id']}", type="primary", disabled=sem_tj):
             atualizar(r["id"], doc_status=DOC_APROVADA_PEND, doc_obs=obs, doc_validado_em=agora())
             avisar("Documentação aprovada com CNPJ pendente." + ir_para_proxima(r["id"], 2, True))
             st.rerun()
@@ -2410,7 +2451,7 @@ def aba_documentos(r):
         if r["doc_status"] == DOC_APROVADA_PEND:
             st.info("O CNPJ foi regularizado. Confira o cartão e aprove a documentação definitiva.")
         if r["doc_status"] != DOC_APROVADA and b1.button(
-                "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary"):
+                "✅ Aprovar documentação", key=f"aprova_{r['id']}", type="primary", disabled=sem_tj):
             atualizar(r["id"], doc_status=DOC_APROVADA, doc_obs=obs, doc_validado_em=agora())
             avisar("Documentação aprovada." + ir_para_proxima(r["id"], 2, True))
             st.rerun()
@@ -2420,6 +2461,39 @@ def aba_documentos(r):
         else:
             atualizar(r["id"], doc_status="Reprovada", doc_obs=obs, doc_validado_em=agora())
             avisar("Ajuste solicitado ao candidato." + ir_para_proxima(r["id"], 2, True), "📝")
+            st.rerun()
+
+
+TJ_OPCOES = {"⏳ Pendente": "", "✅ Nada consta": "Nada consta", "⚠️ Possui processos": "Possui processos"}
+
+
+def bloco_tj(r):
+    """Check de ações judiciais no TJ, feito pela Tatiana com os dados que ela recebe por e-mail."""
+    with st.container(border=True):
+        st.markdown("**⚖️ Check de processos no TJ (ações judiciais)**")
+        st.caption("Quando o candidato envia os dados, a Tatiana recebe um e-mail com eles para consultar o TJ. "
+                   "Registre aqui o resultado e anexe o PDF da consulta.")
+        c1, c2 = st.columns(2)
+        atual = next((k for k, v in TJ_OPCOES.items() if v == r["tj_check"]), "⏳ Pendente")
+        versao = f"{r['id']}_{r['atualizado_em']}"
+        escolha = c1.segmented_control("Resultado da consulta", list(TJ_OPCOES), default=atual, key=f"tj_{versao}")
+        if r["tj_conferido_em"]:
+            c1.caption(f"Registrado em {data_br(r['tj_conferido_em'])}")
+        with c2:
+            if r["tj_arquivo"]:
+                mostrar_arquivo(r["tj_arquivo"], "PDF do TJ", key=f"dl_tj_{r['id']}")
+            arq = st.file_uploader("Substituir PDF da consulta" if r["tj_arquivo"] else "PDF da consulta de processos",
+                                   type=["pdf", "png", "jpg", "jpeg"], key=f"tj_arq_{versao}")
+        if st.button("Salvar check do TJ", key=f"tj_salvar_{r['id']}"):
+            valor = TJ_OPCOES.get(escolha, "")
+            campos = {"tj_check": valor}
+            if valor != r["tj_check"]:
+                campos["tj_conferido_em"] = agora() if valor else ""
+            if arq is not None:
+                campos["tj_arquivo"] = guardar_arquivo(f"{r['id']}_tj", arq)
+            atualizar(r["id"], **campos)
+            avisar("Check do TJ salvo." + ("" if campos.get("tj_arquivo") or r["tj_arquivo"] or not valor
+                                            else " Falta anexar o PDF da consulta."))
             st.rerun()
 
 
