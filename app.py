@@ -74,7 +74,7 @@ COLUNAS = [
     "cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
     "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
-    "cnpj_apto", "cartao_cnpj", "doc_identidade", "form_enviado_em",
+    "cnpj_apto", "cartao_cnpj", "doc_identidade", "comprovante_residencia", "form_enviado_em",
     # Etapa 2 (validação de documentos)
     "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em", "tj_email_em",
     "ac_check", "ac_arquivo", "ac_conferido_em",
@@ -284,7 +284,7 @@ def atualizar(pid, **campos):
     notificar_mudanca_etapa(antes, depois)
 
 
-CAMPOS_ANEXO = ("curriculo", "avaliacao", "doc_identidade", "cartao_cnpj", "tj_arquivo", "ac_arquivo",
+CAMPOS_ANEXO = ("curriculo", "avaliacao", "doc_identidade", "comprovante_residencia", "cartao_cnpj", "tj_arquivo", "ac_arquivo",
                 "contrato_arquivo")
 
 
@@ -1455,6 +1455,13 @@ def formulario_candidato(r, prefixo="cand"):
                               else "Substituir CNH ou RG com CPF (PDF ou foto)",
                               type=["pdf", "png", "jpg", "jpeg"], key=k("docid"))
     mostrar_erro(st, erros.get("docid"))
+    if r["comprovante_residencia"]:
+        st.caption(f"✅ Comprovante já enviado: {nome_anexo(r, r['comprovante_residencia'])}. "
+                   "Anexe outro só se quiser substituir.")
+    comp_res = st.file_uploader("Comprovante de residência (conta de luz, água, telefone etc., PDF ou foto) *"
+                                if not r["comprovante_residencia"] else "Substituir comprovante de residência",
+                                type=["pdf", "png", "jpg", "jpeg"], key=k("compres"))
+    mostrar_erro(st, erros.get("compres"))
 
     st.markdown("##### Pessoa jurídica")
     possui = st.radio("Já possui CNPJ?", ["Sim", "Não"], horizontal=True,
@@ -1584,6 +1591,7 @@ def formulario_candidato(r, prefixo="cand"):
             "cidade": erro_texto(end["cidade"]), "bairro": erro_texto(end["bairro"]),
             "logradouro": erro_texto(end["logradouro"], 3), "numero": erro_numero(end["numero"]),
             "docid": "" if doc_id is not None or r["doc_identidade"] else "Anexe a CNH ou o RG com CPF.",
+            "compres": "" if comp_res is not None or r["comprovante_residencia"] else "Anexe o comprovante de residência.",
         }
         por_campo = {c: m for c, m in por_campo.items() if m}
         gerais = []
@@ -1610,6 +1618,8 @@ def formulario_candidato(r, prefixo="cand"):
             campos["cartao_cnpj"] = guardar_arquivo(pid, arquivo)
         if doc_id is not None:
             campos["doc_identidade"] = guardar_arquivo(f"{pid}_doc", doc_id)
+        if comp_res is not None:
+            campos["comprovante_residencia"] = guardar_arquivo(f"{pid}_res", comp_res)
         if apto and not mantido and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
@@ -2171,6 +2181,7 @@ ANEXOS_PROCESSO = [
     ("tj_arquivo", "Check de processos no TJ", ABAS_FICHA[1]),
     ("ac_arquivo", "Antecedentes criminais", ABAS_FICHA[1]),
     ("doc_identidade", "CNH ou RG com CPF", ABAS_FICHA[2]),
+    ("comprovante_residencia", "Comprovante de residência", ABAS_FICHA[2]),
     ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[2]),
     ("contrato_arquivo", "Contrato assinado", ABAS_FICHA[3]),
 ]
@@ -2180,7 +2191,7 @@ def nome_anexo(r, valor):
     """Nome original do arquivo, sem o prefixo de armazenamento e o id do prestador."""
     nome = valor.split(":", 1)[1] if valor.startswith(("local:", "gcs:", "fs:")) else valor
     nome = nome.rsplit("/", 1)[-1]
-    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_ac_", f"{r['id']}_doc_", f"{r['id']}_contrato_", f"{r['id']}_"):
+    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_ac_", f"{r['id']}_doc_", f"{r['id']}_res_", f"{r['id']}_contrato_", f"{r['id']}_"):
         if nome.startswith(prefixo):
             return nome[len(prefixo):]
     return nome
@@ -2247,6 +2258,7 @@ def checklist_etapas(r):
         [(bool(r["form_enviado_em"]), "Formulário enviado", data_br(r["form_enviado_em"])),
          (bool(r["cpf"]) and bool(r["endereco"]), "Dados pessoais e endereço", r["cidade"] and f"{r['cidade']}/{r['uf']}"),
          (bool(r["doc_identidade"]), "CNH ou RG com CPF", arq(r["doc_identidade"])),
+         (bool(r["comprovante_residencia"]), "Comprovante de residência", arq(r["comprovante_residencia"])),
          (r["possui_cnpj"] == SIM, "CNPJ", cnpj_txt),
          (r["possui_cnpj"] == SIM and not cnpj_pendente(r), "CNPJ dentro das regras",
           (r["regime_tributario"] or "MEI: " + (r["is_mei"] or "—")) + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
@@ -2471,6 +2483,7 @@ def aba_documentos(r):
             "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
         }))
         mostrar_arquivo(r["doc_identidade"], "CNH ou RG com CPF", key=f"dl_docid_{r['id']}")
+        mostrar_arquivo(r["comprovante_residencia"], "Comprovante de residência", key=f"dl_compres_{r['id']}")
     with c2, st.container(border=True):
         st.markdown("**Pessoa jurídica**")
         html(campos_html({
