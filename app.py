@@ -87,6 +87,8 @@ COLUNAS = [
     "onb_material", "onb_metas", "onb_cultura", "data_integracao", "padrinho",
     # Etapa 7
     "status_final", "operacao_iniciada_em",
+    # Anexos avulsos do RH (lista JSON: descricao, valor, em)
+    "outros_anexos",
 ]
 
 ETAPAS = {
@@ -296,6 +298,8 @@ def excluir(pid):
         return
     for campo in CAMPOS_ANEXO:
         apagar_anexo(linha.iloc[0][campo])
+    for extra in outros_anexos(linha.iloc[0]):
+        apagar_anexo(extra["valor"])
     if usa_firestore():
         _sessao_gcp().delete(_url_firestore(pid), timeout=30).raise_for_status()
         _ler_firestore.clear()
@@ -2192,50 +2196,119 @@ ANEXOS_PROCESSO = [
 ]
 
 
+# Prefixo do arquivo guardado, por campo (o mesmo usado quando o anexo entra pela etapa)
+PREFIXO_ANEXO = {"curriculo": "cv", "avaliacao": "avaliacao", "doc_identidade": "doc", "comprovante_residencia": "res",
+                 "cartao_cnpj": "", "tj_arquivo": "tj", "ac_arquivo": "ac", "contrato_arquivo": "contrato"}
+
+
+def outros_anexos(r):
+    try:
+        return json.loads(r["outros_anexos"]) if r["outros_anexos"] else []
+    except ValueError:
+        return []
+
+
 def nome_anexo(r, valor):
     """Nome original do arquivo, sem o prefixo de armazenamento e o id do prestador."""
     nome = valor.split(":", 1)[1] if valor.startswith(("local:", "gcs:", "fs:")) else valor
     nome = nome.rsplit("/", 1)[-1]
-    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_ac_", f"{r['id']}_doc_", f"{r['id']}_res_", f"{r['id']}_contrato_", f"{r['id']}_"):
+    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_extra_", f"{r['id']}_tj_", f"{r['id']}_ac_", f"{r['id']}_doc_", f"{r['id']}_res_", f"{r['id']}_contrato_", f"{r['id']}_"):
         if nome.startswith(prefixo):
             return nome[len(prefixo):]
     return nome
 
 
+def baixar_anexo(col, r, valor, nome, key):
+    if valor.startswith(("local:", "gcs:", "fs:")):
+        col.download_button("⬇️ Baixar", lambda v=valor: (ler_arquivo(v) or ("", b""))[1], nome,
+                            key=key, width="stretch", on_click="ignore")
+    else:
+        col.link_button("Abrir", valor, width="stretch")
+
+
 def aba_anexos(r):
-    """Todos os arquivos anexados no processo, num lugar só. O conteúdo só é lido ao clicar em baixar."""
+    """Todos os arquivos do processo num lugar só. O RH também anexa ou substitui por aqui
+    (documento que chegou por fora do sistema) e inclui outros arquivos avulsos."""
+    pid = r["id"]
+    chave_versao = f"anx_versao_{pid}"  # muda a cada envio para limpar os campos (atualizado_em só tem minutos)
+    versao = st.session_state.setdefault(chave_versao, 0)
     anexados = [(c, doc, etapa) for c, doc, etapa in ANEXOS_PROCESSO if r[c]]
-    st.caption(f"{len(anexados)} de {len(ANEXOS_PROCESSO)} documentos anexados. "
-               "Para trocar um arquivo, anexe de novo na etapa indicada.")
+    extras = outros_anexos(r)
+    st.caption(f"{len(anexados)} de {len(ANEXOS_PROCESSO)} documentos anexados"
+               + (f" e {len(extras)} outro(s)" if extras else "") + ". "
+               "O RH pode anexar ou substituir qualquer documento por aqui.")
     for campo, doc, etapa in ANEXOS_PROCESSO:
         valor = r[campo]
         with st.container(border=True):
-            c1, c2, c3 = st.columns([2, 2.2, 1.3], vertical_alignment="center")
+            c1, c2, c3, c4 = st.columns([2, 2.2, 1.1, 1.1], vertical_alignment="center")
             c1.markdown(f"**{'📄' if valor else '▫️'} {doc}**")
             c1.caption(etapa)
             if not valor:
                 c2.caption("Não anexado")
-            elif valor.startswith(("local:", "gcs:", "fs:")):
-                nome = nome_anexo(r, valor)
-                c2.markdown(f"`{nome}`")
-                c3.download_button("⬇️ Baixar", lambda v=valor: (ler_arquivo(v) or ("", b""))[1], nome,
-                                   key=f"anx_{campo}_{r['id']}", width="stretch", on_click="ignore")
             else:
-                c2.caption("Arquivo no Google Drive")
-                c3.link_button("Abrir", valor, width="stretch")
-    locais = [(c, doc) for c, doc, _ in anexados if r[c].startswith(("local:", "gcs:", "fs:"))]
+                nome = nome_anexo(r, valor)
+                c2.markdown(f"`{nome}`" if valor.startswith(("local:", "gcs:", "fs:")) else "Arquivo no Google Drive")
+                baixar_anexo(c3, r, valor, nome, f"anx_{campo}_{pid}")
+            with c4.popover("🔄 Substituir" if valor else "📤 Anexar", width="stretch"):
+                arq = st.file_uploader(doc, type=["pdf", "png", "jpg", "jpeg", "docx", "md"],
+                                       key=f"anx_up_{campo}_{pid}_{versao}")
+                if st.button("Salvar", key=f"anx_salvar_{campo}_{pid}", type="primary", disabled=arq is None):
+                    prefixo = f"{pid}_{PREFIXO_ANEXO[campo]}" if PREFIXO_ANEXO[campo] else pid
+                    novo = guardar_arquivo(prefixo, arq)
+                    atualizar(pid, **{campo: novo})
+                    if valor and valor != novo:  # mesmo nome de arquivo já foi sobrescrito
+                        apagar_anexo(valor)
+                    st.session_state[chave_versao] += 1
+                    avisar(f"{doc} anexado pelo RH.")
+                    st.rerun()
+
+    st.markdown("##### Outros documentos")
+    st.caption("Arquivos que chegaram por fora do sistema e não se encaixam acima (ex.: certidões extras, "
+               "declarações, comprovantes).")
+    for i, extra in enumerate(extras):
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([2, 2.2, 1.1, 1.1], vertical_alignment="center")
+            c1.markdown(f"**📎 {extra['descricao']}**")
+            c1.caption(f"Anexado pelo RH em {data_br(extra.get('em', ''))}")
+            nome = nome_anexo(r, extra["valor"])
+            c2.markdown(f"`{nome}`")
+            baixar_anexo(c3, r, extra["valor"], nome, f"anx_extra_{i}_{pid}")
+            if c4.button("🗑️ Remover", key=f"anx_extra_del_{i}_{pid}", width="stretch"):
+                restantes = [e for j, e in enumerate(extras) if j != i]
+                atualizar(pid, outros_anexos=json.dumps(restantes, ensure_ascii=False))
+                apagar_anexo(extra["valor"])
+                avisar(f"{extra['descricao']} removido.", "🗑️")
+                st.rerun()
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 3])
+        descricao = c1.text_input("Descrição do documento", key=f"anx_extra_desc_{pid}_{versao}",
+                                  placeholder="Ex.: Certidão negativa estadual")
+        arq = c2.file_uploader("Arquivo", type=["pdf", "png", "jpg", "jpeg", "docx", "md", "xlsx"],
+                               key=f"anx_extra_up_{pid}_{versao}")
+        if st.button("📤 Adicionar documento", key=f"anx_extra_add_{pid}", disabled=arq is None):
+            if not descricao.strip():
+                st.error("Descreva o documento.")
+            else:
+                novo = {"descricao": descricao.strip(), "valor": guardar_arquivo(f"{pid}_extra", arq), "em": agora()}
+                atualizar(pid, outros_anexos=json.dumps(extras + [novo], ensure_ascii=False))
+                st.session_state[chave_versao] += 1
+                avisar(f"{novo['descricao']} adicionado.")
+                st.rerun()
+
+    locais = [(doc, r[c]) for c, doc, _ in anexados if r[c].startswith(("local:", "gcs:", "fs:"))]
+    locais += [(e["descricao"], e["valor"]) for e in extras if e["valor"].startswith(("local:", "gcs:", "fs:"))]
     if len(locais) > 1:
         def zip_todos():
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                for c, doc in locais:
-                    arq = ler_arquivo(r[c])
+                for doc, valor in locais:
+                    arq = ler_arquivo(valor)
                     if arq:
-                        z.writestr(f"{doc} - {nome_anexo(r, r[c])}", arq[1])
+                        z.writestr(f"{doc} - {nome_anexo(r, valor)}", arq[1])
             return buf.getvalue()
         nome_zip = re.sub(r"[^a-z0-9]+", "_", _sem_acento(r["nome"])).strip("_") or "prestador"
         st.download_button("⬇️ Baixar todos (.zip)", zip_todos, f"anexos_{nome_zip}.zip", type="primary",
-                           key=f"anx_zip_{r['id']}", on_click="ignore")
+                           key=f"anx_zip_{pid}", on_click="ignore")
 
 
 def checklist_etapas(r):
