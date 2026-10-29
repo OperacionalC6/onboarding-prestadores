@@ -74,9 +74,10 @@ COLUNAS = [
     "cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento",
     "possui_cnpj", "cnpj", "razao_social", "natureza_juridica", "situacao_cnpj",
     "is_mei", "regime_tributario", "tem_cnae", "cnae_principal", "cnaes_secundarios", "fonte_validacao",
-    "cnpj_apto", "cartao_cnpj", "form_enviado_em",
+    "cnpj_apto", "cartao_cnpj", "doc_identidade", "form_enviado_em",
     # Etapa 2 (validação de documentos)
     "doc_status", "doc_obs", "doc_validado_em", "tj_check", "tj_arquivo", "tj_conferido_em", "tj_email_em",
+    "ac_check", "ac_arquivo", "ac_conferido_em",
     # Etapa 4
     "contrato_enviado", "contrato_assinado", "contrato_data", "contrato_arquivo",
     # Etapa 5
@@ -283,7 +284,8 @@ def atualizar(pid, **campos):
     notificar_mudanca_etapa(antes, depois)
 
 
-CAMPOS_ANEXO = ("curriculo", "avaliacao", "cartao_cnpj", "tj_arquivo", "contrato_arquivo")
+CAMPOS_ANEXO = ("curriculo", "avaliacao", "doc_identidade", "cartao_cnpj", "tj_arquivo", "ac_arquivo",
+                "contrato_arquivo")
 
 
 def excluir(pid):
@@ -1425,6 +1427,14 @@ def formulario_candidato(r, prefixo="cand"):
     estado_civil = c1.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx, key=k("ec"))
     end = campos_endereco(r, k, erros)
 
+    st.markdown("##### Documento de identificação")
+    if r["doc_identidade"]:
+        st.caption(f"✅ Documento já enviado: {nome_anexo(r, r['doc_identidade'])}. Anexe outro só se quiser substituir.")
+    doc_id = st.file_uploader("CNH ou RG com CPF (PDF ou foto, frente e verso) *" if not r["doc_identidade"]
+                              else "Substituir CNH ou RG com CPF (PDF ou foto)",
+                              type=["pdf", "png", "jpg", "jpeg"], key=k("docid"))
+    mostrar_erro(st, erros.get("docid"))
+
     st.markdown("##### Pessoa jurídica")
     possui = st.radio("Já possui CNPJ?", ["Sim", "Não"], horizontal=True,
                       index=0 if r["possui_cnpj"] != "Não" else 1, key=k("possui"))
@@ -1552,6 +1562,7 @@ def formulario_candidato(r, prefixo="cand"):
             "cep": erro_cep(end["cep"]), "uf": "" if end["uf"] else "Selecione o estado.",
             "cidade": erro_texto(end["cidade"]), "bairro": erro_texto(end["bairro"]),
             "logradouro": erro_texto(end["logradouro"], 3), "numero": erro_numero(end["numero"]),
+            "docid": "" if doc_id is not None or r["doc_identidade"] else "Anexe a CNH ou o RG com CPF.",
         }
         por_campo = {c: m for c, m in por_campo.items() if m}
         gerais = []
@@ -1576,6 +1587,8 @@ def formulario_candidato(r, prefixo="cand"):
         )
         if arquivo is not None:
             campos["cartao_cnpj"] = guardar_arquivo(pid, arquivo)
+        if doc_id is not None:
+            campos["doc_identidade"] = guardar_arquivo(f"{pid}_doc", doc_id)
         if apto and not mantido and r["doc_status"] != DOC_APROVADA_PEND:
             campos.update(doc_status="Pendente", doc_obs="")
         atualizar(pid, **campos)
@@ -1996,7 +2009,7 @@ def status_etapas(r):
     elif r["doc_status"] == "Reprovada":
         st2 = "erro"
     else:
-        st2 = "andamento" if form or r["tj_check"] or r["doc_status"] == DOC_APROVADA_PEND else "todo"
+        st2 = "andamento" if form or r["tj_check"] or r["ac_check"] or r["doc_status"] == DOC_APROVADA_PEND else "todo"
     # Etapa 3: formulário do candidato com dados e CNPJ
     if feitas[3]:
         st3 = "ok"
@@ -2135,6 +2148,8 @@ ANEXOS_PROCESSO = [
     ("curriculo", "Currículo", ABAS_FICHA[0]),
     ("avaliacao", "Avaliação completa", ABAS_FICHA[0]),
     ("tj_arquivo", "Check de processos no TJ", ABAS_FICHA[1]),
+    ("ac_arquivo", "Antecedentes criminais", ABAS_FICHA[1]),
+    ("doc_identidade", "CNH ou RG com CPF", ABAS_FICHA[2]),
     ("cartao_cnpj", "Cartão CNPJ", ABAS_FICHA[2]),
     ("contrato_arquivo", "Contrato assinado", ABAS_FICHA[3]),
 ]
@@ -2144,7 +2159,7 @@ def nome_anexo(r, valor):
     """Nome original do arquivo, sem o prefixo de armazenamento e o id do prestador."""
     nome = valor.split(":", 1)[1] if valor.startswith(("local:", "gcs:", "fs:")) else valor
     nome = nome.rsplit("/", 1)[-1]
-    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_contrato_", f"{r['id']}_"):
+    for prefixo in (f"{r['id']}_cv_", f"{r['id']}_avaliacao_", f"{r['id']}_tj_", f"{r['id']}_ac_", f"{r['id']}_doc_", f"{r['id']}_contrato_", f"{r['id']}_"):
         if nome.startswith(prefixo):
             return nome[len(prefixo):]
     return nome
@@ -2204,10 +2219,13 @@ def checklist_etapas(r):
          (bool(r["avaliacao_nota"]), "Avaliação de perfil", f"nota {r['avaliacao_nota']}" if r["avaliacao_nota"] else "")],
         [(bool(r["tj_check"]), "Check de processos no TJ", r["tj_check"] or "Pendente"),
          (bool(r["tj_arquivo"]), "PDF da consulta no TJ", arq(r["tj_arquivo"])),
+         (bool(r["ac_check"]), "Antecedentes criminais", r["ac_check"] or "Pendente"),
+         (bool(r["ac_arquivo"]), "Certidão de antecedentes criminais", arq(r["ac_arquivo"])),
          (r["doc_status"] in DOCS_LIBERADAS, "Documentação conferida pelo RH", r["doc_status"] or "Pendente"),
          (r["doc_status"] == DOC_APROVADA, "Aprovação definitiva", r["doc_obs"])],
         [(bool(r["form_enviado_em"]), "Formulário enviado", data_br(r["form_enviado_em"])),
          (bool(r["cpf"]) and bool(r["endereco"]), "Dados pessoais e endereço", r["cidade"] and f"{r['cidade']}/{r['uf']}"),
+         (bool(r["doc_identidade"]), "CNH ou RG com CPF", arq(r["doc_identidade"])),
          (r["possui_cnpj"] == SIM, "CNPJ", cnpj_txt),
          (r["possui_cnpj"] == SIM and not cnpj_pendente(r), "CNPJ dentro das regras",
           (r["regime_tributario"] or "MEI: " + (r["is_mei"] or "—")) + f" · CNAE {fmt_cnae(CNAE_EXIGIDO)}: " + (r["tem_cnae"] or "—")
@@ -2421,6 +2439,7 @@ def aba_documentos(r):
     if not r["form_enviado_em"]:
         st.warning("O candidato ainda não enviou os dados (Etapa 3). O check do TJ já pode ser registrado.")
         bloco_tj(r)
+        bloco_antecedentes(r)
         return
     c1, c2 = st.columns(2)
     with c1, st.container(border=True):
@@ -2430,6 +2449,7 @@ def aba_documentos(r):
             "Nascimento": r["data_nascimento"], "Telefone": r["telefone"], "E-mail": r["email"],
             "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
         }))
+        mostrar_arquivo(r["doc_identidade"], "CNH ou RG com CPF", key=f"dl_docid_{r['id']}")
     with c2, st.container(border=True):
         st.markdown("**Pessoa jurídica**")
         html(campos_html({
@@ -2443,12 +2463,17 @@ def aba_documentos(r):
     if cnpj_declarado(r):
         validacao_manual_cnpj(r)
     bloco_tj(r)
+    bloco_antecedentes(r)
     st.write(f"Status da documentação: **{r['doc_status'] or 'Pendente'}**")
-    sem_tj = not r["tj_check"]
-    if sem_tj:
-        st.info("Registre o check de processos no TJ acima para liberar a aprovação da documentação.")
-    elif r["tj_check"] == "Possui processos":
+    faltam = [nome for campo, nome in (("tj_check", "processos no TJ"), ("ac_check", "antecedentes criminais"))
+              if not r[campo]]
+    sem_tj = bool(faltam)
+    if faltam:
+        st.info(f"Registre o check de {' e de '.join(faltam)} acima para liberar a aprovação da documentação.")
+    if r["tj_check"] == "Possui processos":
         st.warning("O check do TJ encontrou processos. Avalie antes de aprovar.")
+    if r["ac_check"] == "Possui registros":
+        st.warning("O check de antecedentes criminais encontrou registros. Avalie antes de aprovar.")
     obs = st.text_input("Observação para o candidato (obrigatória ao reprovar)", r["doc_obs"], key=f"docobs_{r['id']}")
     b1, b2 = st.columns(2)
     if cnpj_pendente(r):
@@ -2525,6 +2550,38 @@ def bloco_tj(r):
             atualizar(r["id"], **campos)
             avisar("Check do TJ salvo." + ("" if campos.get("tj_arquivo") or r["tj_arquivo"] or not valor
                                             else " Falta anexar o PDF da consulta."))
+            st.rerun()
+
+
+AC_OPCOES = {"⏳ Pendente": "", "✅ Nada consta": "Nada consta", "⚠️ Possui registros": "Possui registros"}
+
+
+def bloco_antecedentes(r):
+    """Check de antecedentes criminais, com a certidão anexada."""
+    with st.container(border=True):
+        st.markdown("**🛡️ Check de antecedentes criminais**")
+        st.caption("Registre o resultado da certidão de antecedentes criminais e anexe o arquivo.")
+        c1, c2 = st.columns(2)
+        atual = next((k for k, v in AC_OPCOES.items() if v == r["ac_check"]), "⏳ Pendente")
+        versao = f"{r['id']}_{r['atualizado_em']}"
+        escolha = c1.segmented_control("Resultado da certidão", list(AC_OPCOES), default=atual, key=f"ac_{versao}")
+        if r["ac_conferido_em"]:
+            c1.caption(f"Registrado em {data_br(r['ac_conferido_em'])}")
+        with c2:
+            if r["ac_arquivo"]:
+                mostrar_arquivo(r["ac_arquivo"], "certidão", key=f"dl_ac_{r['id']}")
+            arq = st.file_uploader("Substituir certidão" if r["ac_arquivo"] else "Certidão de antecedentes criminais",
+                                   type=["pdf", "png", "jpg", "jpeg"], key=f"ac_arq_{versao}")
+        if st.button("Salvar check de antecedentes", key=f"ac_salvar_{r['id']}"):
+            valor = AC_OPCOES.get(escolha, "")
+            campos = {"ac_check": valor}
+            if valor != r["ac_check"]:
+                campos["ac_conferido_em"] = agora() if valor else ""
+            if arq is not None:
+                campos["ac_arquivo"] = guardar_arquivo(f"{r['id']}_ac", arq)
+            atualizar(r["id"], **campos)
+            avisar("Check de antecedentes salvo." + ("" if campos.get("ac_arquivo") or r["ac_arquivo"] or not valor
+                                                      else " Falta anexar a certidão."))
             st.rerun()
 
 
