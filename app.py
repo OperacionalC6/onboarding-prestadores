@@ -41,9 +41,9 @@ import streamlit as st
 st.set_page_config(page_title="Onboarding de Prestadores", page_icon="🤝", layout="wide")
 
 CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
-VAGAS = ["Operador EGV", "Corretor EGV", "Gerente de Negócios", "Gerente Comercial"]
+VAGAS = ["Operador EGV", "Corretor EGV", "Líder de EGV", "Gerente de Negócios", "Gerente Comercial"]
 VAGAS_RENOMEADAS = {"Gestor Comercial": "Gerente Comercial"}  # nome antigo -> atual, para registros já gravados
-VAGAS_ACEITAM_MEI = {"Operador EGV", "Corretor EGV"}  # nas demais vagas o CNPJ não pode ser MEI
+VAGAS_ACEITAM_MEI = {"Operador EGV", "Corretor EGV", "Líder de EGV"}  # nas demais vagas o CNPJ não pode ser MEI
 STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
 STATUS_TRIAGEM = ("Em Triagem", "Reprovado")  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
