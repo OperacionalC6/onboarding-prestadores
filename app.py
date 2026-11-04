@@ -2573,8 +2573,12 @@ def validacao_manual_cnpj(r):
         st.caption("O candidato autodeclarou os dados abaixo (a consulta automática não confirmou ou deu diferente). "
                    "Abra o cartão CNPJ acima, ou consulte no site da Receita Federal, e confirme.")
         resumo_declaracao_cnpj(r)
-        st.link_button("Abrir consulta na Receita Federal",
-                       "https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp")
+        l1, l2, _ = st.columns([1, 1, 1])
+        l1.link_button("Abrir consulta na Receita Federal",
+                       "https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp",
+                       width="stretch")
+        l2.link_button("Consultar optante pelo Simples Nacional",
+                       "https://www8.receita.fazenda.gov.br/simplesnacional/aplicacoes.aspx?id=21", width="stretch")
         ativa = st.checkbox("Situação cadastral ATIVA", key=f"mv_ativa_{r['id']}")
         if aceita_mei(r["vaga"]):
             nao_mei = True
