@@ -44,8 +44,9 @@ CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 VAGAS = ["Operador EGV", "Corretor EGV", "Líder de EGV", "Gerente de Negócios", "Gerente Comercial"]
 VAGAS_RENOMEADAS = {"Gestor Comercial": "Gerente Comercial"}  # nome antigo -> atual, para registros já gravados
 VAGAS_ACEITAM_MEI = {"Operador EGV", "Corretor EGV", "Líder de EGV"}  # nas demais vagas o CNPJ não pode ser MEI
-STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado"]
-STATUS_TRIAGEM = ("Em Triagem", "Reprovado")  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
+STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado", "Candidato Desistiu"]
+STATUS_ENCERRADOS = ("Reprovado", "Candidato Desistiu")  # processo encerrado; ficam ocultos no quadro por padrão
+STATUS_TRIAGEM = ("Em Triagem",) + STATUS_ENCERRADOS  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
@@ -67,7 +68,7 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 COLUNAS = [
     "id", "codigo_acesso", "criado_em", "atualizado_em",
     # Etapa 1
-    "nome", "email", "telefone", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
+    "nome", "email", "telefone", "telefone_corporativo", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
     "avaliacao_nota", "avaliacao_resumo", "avaliacao",
     # Etapa 3 (formulário do candidato: dados e CNPJ)
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
@@ -656,6 +657,14 @@ def erro_email(v):
         return "Campo obrigatório."
     ok = re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}", v)
     return "" if ok else "E-mail inválido. Exemplo: nome@empresa.com.br"
+
+
+def erro_tel_corporativo(v):
+    """Telefone corporativo é opcional e pode ser fixo; só confere o DDD e a quantidade de dígitos."""
+    d = tel_digitos(v)
+    if not d:
+        return ""
+    return "" if len(d) in (10, 11) and d[0] != "0" else "Informe o telefone com DDD: (99) 99999-9999."
 
 
 def erro_tel(v):
@@ -1334,6 +1343,7 @@ def tela_candidato():
             "Em Entrevista": "Seu processo ainda está na fase de entrevistas. Aguarde o contato do RH.",
             "Banco de Espera": "Você está no nosso banco de espera. Entraremos em contato assim que houver oportunidade.",
             "Reprovado": "Agradecemos sua participação. Neste momento não seguiremos com o seu processo.",
+            "Candidato Desistiu": "Seu processo foi encerrado. Se quiser retomar, fale com o RH.",
         }
         st.info(msgs.get(r["status_entrevista"], "Aguarde o contato do RH."))
         return
@@ -1349,7 +1359,7 @@ def tela_candidato():
             st.write(f"**Seu padrinho no primeiro mês:** {r['padrinho']}")
         with st.expander("Ver dados enviados"):
             html(campos_html({"Nome": r["nome_completo"], "CPF": r["cpf"], "E-mail": r["email"],
-                              "Telefone": r["telefone"], "CNPJ": fmt_cnpj(r["cnpj"]),
+                              "Telefone pessoal": r["telefone"], "CNPJ": fmt_cnpj(r["cnpj"]),
                               "Razão social": r["razao_social"]}))
         return
 
@@ -1707,7 +1717,7 @@ def card_prestador(r):
     feitas = etapas_concluidas(r)
     chips = [chip(r["vaga"], "info")]
     if r["status_entrevista"] != "Aprovado":
-        tipo = {"Reprovado": "bad", "Banco de Espera": "warn"}.get(r["status_entrevista"], "pend")
+        tipo = {"Reprovado": "bad", "Candidato Desistiu": "bad", "Banco de Espera": "warn"}.get(r["status_entrevista"], "pend")
         chips.append(chip(r["status_entrevista"], tipo))
     if r["avaliacao_nota"]:
         chips.append(chip(f"Nota {r['avaliacao_nota']}", "info"))
@@ -1742,7 +1752,7 @@ def quadro_kanban():
     vagas = ["Todas as vagas"] + sorted(v for v in df["vaga"].unique() if v)
     vaga = f2.selectbox("Vaga", vagas, key="kb_vaga")
     f3.write("")
-    mostrar_fora = f3.toggle("Mostrar reprovados", key="kb_fora")
+    mostrar_fora = f3.toggle("Mostrar reprovados e desistentes", key="kb_fora")
 
     if busca:
         b = busca.strip().lower()
@@ -1750,7 +1760,7 @@ def quadro_kanban():
     if vaga != "Todas as vagas":
         df = df[df["vaga"] == vaga]
     if not mostrar_fora:
-        df = df[df["status_entrevista"] != "Reprovado"]
+        df = df[~df["status_entrevista"].isin(STATUS_ENCERRADOS)]
 
     df = df.assign(_col=df.apply(coluna_kanban, axis=1) if not df.empty else [])
     st.caption("Cada card fica na primeira etapa pendente. As barrinhas mostram as etapas 2 a 6: "
@@ -1956,10 +1966,10 @@ def base_completa():
     df["cnpj_sit"] = df.apply(
         lambda r: "" if not r["form_enviado_em"] else ("Regular" if not cnpj_pendente(r) else "Pendente"), axis=1)
     st.dataframe(
-        df[["nome", "codigo_acesso", "vaga", "email", "telefone", "status_entrevista", "avaliacao_nota",
+        df[["nome", "codigo_acesso", "vaga", "email", "telefone", "telefone_corporativo", "status_entrevista", "avaliacao_nota",
             "situacao", "cnpj_sit", "padrinho", "atualizado_em"]]
         .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail",
-                         "telefone": "Telefone", "status_entrevista": "Entrevista", "avaliacao_nota": "Nota",
+                         "telefone": "Tel. pessoal", "telefone_corporativo": "Tel. corporativo", "status_entrevista": "Entrevista", "avaliacao_nota": "Nota",
                          "situacao": "Situação", "cnpj_sit": "CNPJ", "padrinho": "Padrinho",
                          "atualizado_em": "Atualizado em"}),
         hide_index=True, width="stretch",
@@ -2042,7 +2052,7 @@ def status_etapas(r):
     """Status visual de cada etapa da ficha: ok | andamento | erro | todo."""
     feitas = etapas_concluidas(r)
     form = bool(r["form_enviado_em"])
-    st1 = {"Aprovado": "ok", "Reprovado": "erro"}.get(r["status_entrevista"], "andamento")
+    st1 = {"Aprovado": "ok", "Reprovado": "erro", "Candidato Desistiu": "erro"}.get(r["status_entrevista"], "andamento")
     # Etapa 2: validação de documentos pelo RH (com o check do TJ)
     if r["doc_status"] == DOC_APROVADA:
         st2 = "ok"
@@ -2145,9 +2155,13 @@ def dialogo_editar(r):
     email = st.text_input("E-mail *", r["email"], key=f"ed_email_{pid}",
                           help="É com este e-mail e o código de acesso que o candidato entra no sistema.")
     mostrar_erro(st, erros.get("email"))
-    tel = st.text_input("Celular com DDD *", fmt_tel(r["telefone"]), key=f"ed_tel_{pid}",
-                        placeholder="(31) 99999-9999")
-    mostrar_erro(st, erros.get("tel"))
+    c_tel1, c_tel2 = st.columns(2)
+    tel = c_tel1.text_input("Telefone pessoal *", fmt_tel(r["telefone"]), key=f"ed_tel_{pid}",
+                            placeholder="(31) 99999-9999")
+    mostrar_erro(c_tel1, erros.get("tel"))
+    tel_corp = c_tel2.text_input("Telefone corporativo", fmt_tel(r["telefone_corporativo"]), key=f"ed_telc_{pid}",
+                                 placeholder="(31) 99999-9999")
+    mostrar_erro(c_tel2, erros.get("telc"))
     opcoes_vaga = VAGAS + ([r["vaga"]] if r["vaga"] and r["vaga"] not in VAGAS else [])
     vaga = st.selectbox("Vaga / Cargo *", opcoes_vaga,
                         index=opcoes_vaga.index(r["vaga"]) if r["vaga"] in opcoes_vaga else 0, key=f"ed_vaga_{pid}")
@@ -2159,11 +2173,13 @@ def dialogo_editar(r):
         st.rerun()
     if c2.button("💾 Salvar", type="primary", width="stretch", key=f"ed_salvar_{pid}"):
         novos_erros = {c: m for c, m in {"nome": erro_nome(nome, completo=False), "email": erro_email(email),
-                                          "tel": erro_tel(tel)}.items() if m}
+                                          "tel": erro_tel(tel),
+                                          "telc": erro_tel_corporativo(tel_corp)}.items() if m}
         st.session_state[f"ed_erros_{pid}"] = novos_erros
         if novos_erros:
             st.rerun()
-        campos = {"nome": titulo_nome(nome), "email": email.strip().lower(), "telefone": fmt_tel(tel), "vaga": vaga}
+        campos = {"nome": titulo_nome(nome), "email": email.strip().lower(), "telefone": fmt_tel(tel),
+                  "telefone_corporativo": fmt_tel(tel_corp) if tel_corp.strip() else "", "vaga": vaga}
         mudou = {c: v for c, v in campos.items() if v != r[c]}
         if mudou:
             atualizar(pid, **mudou)
@@ -2187,7 +2203,8 @@ def ficha_prestador(r):
     elif st.session_state.get("editar_aberto") == r["id"]:
         dialogo_editar(r)
     html(f'<div class="hero"><h2>{esc(r["nome"])}</h2>'
-         f'<p>{esc(r["vaga"])} · {esc(r["email"])} · {esc(r["telefone"])} · '
+         f'<p>{esc(r["vaga"])} · {esc(r["email"])} · 📱 Pessoal {esc(r["telefone"]) or "—"} · '
+         f'🏢 Corporativo {esc(r["telefone_corporativo"]) or "—"} · '
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
          f'<p><b>{situacao_ficha(r)}</b></p></div>')
 
@@ -2409,13 +2426,14 @@ def onepage_html(r):
     etapas_ok = sum(s == "ok" for s in status)
     pct = round(100 * feitos / total)
     fonte = "font-family:Arial,Helvetica,sans-serif;"
-    reprovado = r["status_entrevista"] == "Reprovado"
+    reprovado = r["status_entrevista"] in STATUS_ENCERRADOS  # processo encerrado: resumo só com a entrevista
+    motivo = r["status_entrevista"]
     blocos = []
     etapas = list(zip(ABAS_FICHA, status, itens))
     for nome, s, lista in (etapas[:1] if reprovado else etapas):
         icone, borda, fundo, legenda = CORES_STATUS[s]
         if reprovado:
-            legenda = "Reprovado"
+            legenda = motivo
         linhas = "".join(
             f'<tr><td style="width:26px;padding:5px 0;vertical-align:top;font-size:15px">{"➖" if det.startswith("N/A") else "✅" if ok else "⬜"}</td>'
             f'<td style="padding:5px 0;font-size:14px;color:{"#111827" if ok else "#6B7280"}">{esc(item)}</td>'
@@ -2430,12 +2448,15 @@ def onepage_html(r):
             f"</table></td></tr>"
             f'<tr><td style="padding:4px 14px 8px"><table width="100%" cellpadding="0" cellspacing="0">{linhas}'
             f"</table></td></tr></table>")
-    dados = [("Vaga", r["vaga"]), ("E-mail", r["email"]), ("Telefone", r["telefone"]),
-             ("Código de acesso", r["codigo_acesso"]),
-             ("Situação", "Reprovado" if reprovado else r["status_final"] or "Em onboarding")]
+    dados = [("Vaga", r["vaga"]), ("E-mail", r["email"]), ("Tel. pessoal", r["telefone"])]
+    if r["telefone_corporativo"]:
+        dados.append(("Tel. corporativo", r["telefone_corporativo"]))
+    dados += [("Código de acesso", r["codigo_acesso"]),
+              ("Situação", motivo if reprovado else r["status_final"] or "Em onboarding")]
     if reprovado:
-        progresso = ('<div style="font-size:14px;color:#991B1B"><b>Processo encerrado: candidato(a) reprovado(a) '
-                     "na triagem/entrevista.</b></div>")
+        texto_fim = ("candidato(a) desistiu do processo" if motivo == "Candidato Desistiu"
+                     else "candidato(a) reprovado(a) na triagem/entrevista")
+        progresso = (f'<div style="font-size:14px;color:#991B1B"><b>Processo encerrado: {texto_fim}.</b></div>')
     else:
         progresso = (
             f'<div style="font-size:14px;color:#111827"><b>{etapas_ok} de 7 etapas concluídas</b> · '
@@ -2606,7 +2627,8 @@ def aba_documentos(r):
         st.markdown("**Dados pessoais**")
         html(campos_html({
             "Nome completo": r["nome_completo"], "CPF": r["cpf"], "RG": r["rg"],
-            "Nascimento": r["data_nascimento"], "Telefone": r["telefone"], "E-mail": r["email"],
+            "Nascimento": r["data_nascimento"], "Tel. pessoal": r["telefone"],
+            "Tel. corporativo": r["telefone_corporativo"], "E-mail": r["email"],
             "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
         }))
         mostrar_arquivo(r["doc_identidade"], "CNH ou RG com CPF", key=f"dl_docid_{r['id']}")
@@ -2803,11 +2825,19 @@ def aba_acessos(r):
     st.markdown("###### Materiais entregues")
     for campo, rotulo in [("mat_computador", "Computador corporativo"), ("mat_celular", "Celular corporativo"),
                           ("mat_uniforme", "Uniforme")]:
-        c1, c2, _ = st.columns([2, 1.7, 2.3], vertical_alignment="center")
+        c1, c2, c3 = st.columns([2, 1.7, 2.3], vertical_alignment="center")
         with c1:
             linha_item(rotulo)
         with c2:
             campos[campo] = ok_na(r, campo, campo)
+        if campo == "mat_celular":
+            numero = c3.text_input("Telefone corporativo", fmt_tel(r["telefone_corporativo"]),
+                                   placeholder="Número do celular corporativo (opcional)", label_visibility="collapsed",
+                                   key=f"tel_corp_{r['id']}").strip()
+            msg = erro_tel_corporativo(numero)
+            if msg:
+                faltando.append(f"Telefone corporativo: {msg}")
+            campos["telefone_corporativo"] = fmt_tel(numero) if numero else ""
     if st.button("Salvar acessos", key=f"salva_ti_{r['id']}", type="primary"):
         if faltando:
             for f in faltando:
