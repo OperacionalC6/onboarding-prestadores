@@ -2132,15 +2132,60 @@ def dialogo_excluir(r):
         st.rerun()
 
 
+def _fechar_edicao():
+    st.session_state.pop("editar_aberto", None)
+
+
+@st.dialog("Editar cadastro", on_dismiss=_fechar_edicao)
+def dialogo_editar(r):
+    pid = r["id"]
+    erros = st.session_state.get(f"ed_erros_{pid}", {})
+    nome = st.text_input("Nome *", r["nome"], key=f"ed_nome_{pid}")
+    mostrar_erro(st, erros.get("nome"))
+    email = st.text_input("E-mail *", r["email"], key=f"ed_email_{pid}",
+                          help="É com este e-mail e o código de acesso que o candidato entra no sistema.")
+    mostrar_erro(st, erros.get("email"))
+    tel = st.text_input("Celular com DDD *", fmt_tel(r["telefone"]), key=f"ed_tel_{pid}",
+                        placeholder="(31) 99999-9999")
+    mostrar_erro(st, erros.get("tel"))
+    opcoes_vaga = VAGAS + ([r["vaga"]] if r["vaga"] and r["vaga"] not in VAGAS else [])
+    vaga = st.selectbox("Vaga / Cargo *", opcoes_vaga,
+                        index=opcoes_vaga.index(r["vaga"]) if r["vaga"] in opcoes_vaga else 0, key=f"ed_vaga_{pid}")
+    if email.strip().lower() != r["email"]:
+        st.caption("⚠️ Ao trocar o e-mail, avise o candidato: ele passa a entrar com o e-mail novo.")
+    c1, c2 = st.columns(2)
+    if c1.button("Cancelar", width="stretch", key=f"ed_cancelar_{pid}"):
+        _fechar_edicao()
+        st.rerun()
+    if c2.button("💾 Salvar", type="primary", width="stretch", key=f"ed_salvar_{pid}"):
+        novos_erros = {c: m for c, m in {"nome": erro_nome(nome, completo=False), "email": erro_email(email),
+                                          "tel": erro_tel(tel)}.items() if m}
+        st.session_state[f"ed_erros_{pid}"] = novos_erros
+        if novos_erros:
+            st.rerun()
+        campos = {"nome": titulo_nome(nome), "email": email.strip().lower(), "telefone": fmt_tel(tel), "vaga": vaga}
+        mudou = {c: v for c, v in campos.items() if v != r[c]}
+        if mudou:
+            atualizar(pid, **mudou)
+        _fechar_edicao()
+        avisar("Cadastro atualizado." if mudou else "Nada foi alterado.")
+        st.rerun()
+
+
 def ficha_prestador(r):
-    c1, _, c3 = st.columns([1, 3, 1])
+    c1, _, c2, c3 = st.columns([1, 2.4, 1, 1])
     if c1.button("← Voltar ao quadro"):
         st.session_state.pop("ficha", None)
         st.rerun()
+    if c2.button("✏️ Editar cadastro", key=f"editar_{r['id']}", width="stretch"):
+        st.session_state["editar_aberto"] = r["id"]
+        st.session_state.pop(f"ed_erros_{r['id']}", None)
     if c3.button("🗑️ Excluir candidato", type="tertiary", key=f"excluir_{r['id']}", width="stretch"):
         st.session_state["excluir_aberto"] = r["id"]
     if st.session_state.get("excluir_aberto") == r["id"]:  # mantém a confirmação aberta entre reruns
         dialogo_excluir(r)
+    elif st.session_state.get("editar_aberto") == r["id"]:
+        dialogo_editar(r)
     html(f'<div class="hero"><h2>{esc(r["nome"])}</h2>'
          f'<p>{esc(r["vaga"])} · {esc(r["email"])} · {esc(r["telefone"])} · '
          f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
