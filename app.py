@@ -2587,6 +2587,39 @@ def resumo_declaracao_cnpj(r):
         st.caption(fonte + (" · Confira no Cartão CNPJ na Etapa 2." if cnpj_declarado(r) else ""))
 
 
+def anexar_cartao_pelo_rh(r):
+    """Cartão CNPJ que o candidato mandou por fora do sistema (e-mail, WhatsApp): o RH anexa aqui.
+    Se o candidato não tinha informado CNPJ, o RH digita o número e a validação pelo cartão é liberada."""
+    pid = r["id"]
+    chave_versao = f"cartao_rh_versao_{pid}"
+    versao = st.session_state.setdefault(chave_versao, 0)
+    sem_cnpj = r["possui_cnpj"] != SIM or not r["cnpj"]
+    with st.popover("🔄 Substituir Cartão CNPJ" if r["cartao_cnpj"] else "📤 Anexar Cartão CNPJ (recebido por fora)"):
+        if sem_cnpj:
+            st.caption("O candidato não informou CNPJ no sistema. Digite os dados do cartão para liberar a validação.")
+            cnpj = st.text_input("CNPJ *", key=f"cartao_rh_cnpj_{pid}_{versao}", placeholder="00.000.000/0000-00")
+            razao = st.text_input("Razão social", key=f"cartao_rh_razao_{pid}_{versao}")
+        arq = st.file_uploader("Cartão CNPJ (PDF ou imagem)", type=["pdf", "png", "jpg", "jpeg"],
+                               key=f"cartao_rh_arq_{pid}_{versao}")
+        if st.button("Salvar", key=f"cartao_rh_salvar_{pid}", type="primary", disabled=arq is None):
+            dados = {}
+            if sem_cnpj:
+                if len(so_digitos(cnpj)) != 14:
+                    st.error("Digite o CNPJ com 14 dígitos.")
+                    return
+                dados = dict(possui_cnpj=SIM, cnpj=so_digitos(cnpj), razao_social=razao.strip(),
+                             cnpj_apto="", situacao_cnpj="", tem_cnae="", is_mei="",
+                             fonte_validacao=f"Cartão recebido pelo RH por fora do sistema em {data_br(agora())} "
+                                             "(dados declarados, conferir no cartão)")
+            novo = guardar_arquivo(pid, arq)
+            atualizar(pid, cartao_cnpj=novo, **dados)
+            if r["cartao_cnpj"] and r["cartao_cnpj"] != novo:
+                apagar_anexo(r["cartao_cnpj"])
+            st.session_state[chave_versao] += 1
+            avisar("Cartão CNPJ anexado pelo RH." + (" Confira e valide no bloco abaixo." if sem_cnpj else ""))
+            st.rerun()
+
+
 def validacao_manual_cnpj(r):
     """CNPJs recém-abertos não aparecem nas bases públicas: o RH confere no cartão e valida aqui."""
     with st.container(border=True):
@@ -2643,6 +2676,7 @@ def aba_documentos(r):
             "Validação": r["fonte_validacao"], "Apto": r["cnpj_apto"],
         }))
         mostrar_arquivo(r["cartao_cnpj"], "Cartão CNPJ", key=f"dl_cartao_{r['id']}")
+        anexar_cartao_pelo_rh(r)
     if cnpj_declarado(r):
         validacao_manual_cnpj(r)
     bloco_tj(r)
