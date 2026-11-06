@@ -68,7 +68,7 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 COLUNAS = [
     "id", "codigo_acesso", "criado_em", "atualizado_em",
     # Etapa 1
-    "nome", "email", "telefone", "telefone_corporativo", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
+    "nome", "email", "email_corporativo", "telefone", "telefone_corporativo", "vaga", "status_entrevista", "obs_entrevista", "curriculo",
     "avaliacao_nota", "avaliacao_resumo", "avaliacao",
     # Etapa 3 (formulário do candidato: dados e CNPJ)
     "nome_completo", "cpf", "rg", "data_nascimento", "endereco", "estado_civil",
@@ -1957,25 +1957,161 @@ def novo_candidato():
         st.button("Cadastrar", type="primary", width="stretch", on_click=cadastrar_candidato)
 
 
+# Planilha de cadastro em lote (prestadores que já atuam e entram direto na Etapa 7 · Início).
+COLUNAS_LOTE = {
+    "Nome completo": "nome_completo", "CPF": "cpf", "RG": "rg", "Data de nascimento": "data_nascimento",
+    "Tel. pessoal": "telefone", "Tel. corporativo": "telefone_corporativo", "E-mail pessoal": "email",
+    "E-mail corporativo": "email_corporativo", "Estado civil": "estado_civil", "CEP": "cep", "UF": "uf",
+    "Cidade": "cidade", "Bairro": "bairro", "Endereço (rua)": "logradouro", "Número": "numero",
+    "Complemento": "complemento", "CNPJ": "cnpj", "Razão social": "razao_social", "Vaga": "vaga",
+    "Início da operação": "operacao_iniciada_em",
+}
+
+
+def _data_lote(v):
+    """Aceita 31/12/1990 ou 1990-12-31. Devolve ISO (aaaa-mm-dd) ou ""."""
+    v = str(v or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(v, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
+def montar_registro_lote(linha):
+    """Converte uma linha da planilha em registro pronto, já aprovado e com a operação iniciada.
+    O que faltar fica em branco para o RH completar depois. Retorna (registro, avisos)."""
+    d = {campo: str(linha.get(col, "") or "").strip() for col, campo in COLUNAS_LOTE.items()}
+    d = {c: ("" if v.lower() in ("nan", "none", "nat") else v) for c, v in d.items()}
+    avisos = []
+    reg = {c: "" for c in COLUNAS}
+    reg.update(id=pysecrets.token_hex(4), codigo_acesso=pysecrets.token_hex(3).upper(), criado_em=agora(),
+               atualizado_em=agora())
+    nome = titulo_nome(d["nome_completo"])
+    vaga = d["vaga"] if d["vaga"] in VAGAS else "Gerente de Negócios"
+    reg.update(nome=nome, nome_completo=nome, vaga=vaga, status_entrevista="Aprovado",
+               obs_entrevista="Cadastro em lote: prestador que já atuava antes do sistema.",
+               email=d["email"].lower(), email_corporativo=d["email_corporativo"].lower(),
+               telefone=fmt_tel(d["telefone"]) if d["telefone"] else "",
+               telefone_corporativo=fmt_tel(d["telefone_corporativo"]) if d["telefone_corporativo"] else "",
+               cpf=so_digitos(d["cpf"]), rg=d["rg"].upper(), data_nascimento=_data_lote(d["data_nascimento"]),
+               estado_civil=d["estado_civil"] if d["estado_civil"] in ESTADOS_CIVIS else "",
+               status_final=STATUS_ATIVO, form_enviado_em=agora())
+    inicio = _data_lote(d["operacao_iniciada_em"])
+    reg["operacao_iniciada_em"] = f"{inicio} 00:00" if inicio else agora()
+    end = {c: d[c] for c in ("cep", "uf", "cidade", "bairro", "logradouro", "numero", "complemento")}
+    end["cep"] = so_digitos(end["cep"])
+    end["uf"] = end["uf"].upper()
+    reg.update(end)
+    reg["endereco"] = montar_endereco(end) if any(end.values()) else ""
+    if reg["cpf"] and not cpf_valido(reg["cpf"]):
+        avisos.append("CPF inválido")
+    if d["cnpj"]:
+        cnpj = so_digitos(d["cnpj"])
+        reg.update(possui_cnpj=SIM, cnpj=cnpj, razao_social=d["razao_social"])
+        res = consultar_cnpj(cnpj) if cnpj_valido(cnpj) else {"status": "invalido"}
+        if res["status"] == "ok":
+            cnaes = [res["cnae_principal"]] + res["cnaes_secundarios"]
+            tem_cnae = CNAE_EXIGIDO in [so_digitos(x).zfill(7) for x in cnaes if x]
+            is_mei = bool(res["is_mei"])
+            apto, _ = avaliar_regras(is_mei, tem_cnae, res["situacao"], vaga)
+            reg.update(razao_social=res["razao_social"] or d["razao_social"], natureza_juridica=res["natureza_juridica"],
+                       situacao_cnpj=res["situacao"], is_mei=SIM if is_mei else "Não",
+                       regime_tributario="MEI" if is_mei else "", tem_cnae=SIM if tem_cnae else "Não",
+                       cnae_principal=fmt_cnae(res["cnae_principal"]) if res["cnae_principal"] else "",
+                       cnaes_secundarios=", ".join(fmt_cnae(x) for x in res["cnaes_secundarios"]),
+                       fonte_validacao=f"Automática ({res['fonte']}) no cadastro em lote",
+                       cnpj_apto=SIM if apto else "Não")
+            if not apto:
+                avisos.append("CNPJ fora das regras (MEI, CNAE ou situação)")
+        else:
+            reg["fonte_validacao"] = "Cadastro em lote: dados declarados, conferir no cartão"
+            avisos.append("CNPJ inválido" if res["status"] == "invalido" else "CNPJ não confirmado na Receita")
+    else:
+        reg["possui_cnpj"] = "Não"
+    return reg, avisos
+
+
+def gravar_registros(registros):
+    if usa_firestore():
+        for reg in registros:
+            _gravar_firestore(reg)
+        return
+    df = carregar()
+    salvar(pd.concat([df, pd.DataFrame(registros)], ignore_index=True))
+
+
+def importar_lote():
+    """Cadastro em lote a partir da planilha (o Claude prepara a planilha com os dados enviados no chat)."""
+    with st.expander("📥 Importar cadastros em lote (prestadores que já atuam)"):
+        st.caption("Envie a planilha com uma linha por prestador. Cada um entra aprovado e com a operação iniciada "
+                   "(Etapa 7 · Início). O que faltar fica pendente para completar depois na ficha. "
+                   "Quem já está cadastrado (mesmo CPF ou e-mail) é ignorado. Nenhum e-mail é enviado.")
+        modelo = io.BytesIO()
+        pd.DataFrame(columns=list(COLUNAS_LOTE)).to_excel(modelo, index=False, engine="openpyxl")
+        st.download_button("⬇️ Baixar planilha modelo", modelo.getvalue(), "cadastro_em_lote.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        versao = st.session_state.setdefault("lote_versao", 0)
+        arq = st.file_uploader("Planilha (.xlsx ou .csv)", type=["xlsx", "csv"], key=f"lote_arq_{versao}")
+        if arq is None:
+            return
+        try:
+            tab = (pd.read_csv(arq, dtype=str, keep_default_na=False) if arq.name.lower().endswith(".csv")
+                   else pd.read_excel(arq, dtype=str).fillna(""))
+        except Exception as e:
+            st.error(f"Não consegui ler a planilha: {e}")
+            return
+        if "Nome completo" not in tab.columns:
+            st.error("A planilha precisa ter a coluna **Nome completo** (use a planilha modelo).")
+            return
+        tab = tab[tab["Nome completo"].astype(str).str.strip() != ""]
+        df = carregar()
+        cpfs = set(df["cpf"].map(so_digitos)) - {""}
+        emails = set(df["email"].str.lower()) - {""}
+        novos, repetidos = [], []
+        for _, linha in tab.iterrows():
+            cpf = so_digitos(linha.get("CPF", ""))
+            email = str(linha.get("E-mail pessoal", "")).strip().lower()
+            (repetidos if (cpf and cpf in cpfs) or (email and email in emails) else novos).append(linha)
+        st.write(f"**{len(novos)}** para cadastrar" + (f" · {len(repetidos)} já cadastrado(s), serão ignorados: "
+                 + ", ".join(str(x["Nome completo"]) for x in repetidos) if repetidos else ""))
+        if novos:
+            st.dataframe(pd.DataFrame(novos), hide_index=True, width="stretch")
+        if novos and st.button(f"✅ Cadastrar {len(novos)} prestador(es)", type="primary", key="lote_ok"):
+            registros, resumo = [], []
+            with st.spinner("Cadastrando e consultando os CNPJs na Receita..."):
+                for linha in novos:
+                    reg, avisos = montar_registro_lote(linha)
+                    registros.append(reg)
+                    resumo.append(f"{reg['nome']}" + (f" ({'; '.join(avisos)})" if avisos else ""))
+            gravar_registros(registros)
+            st.session_state["lote_versao"] += 1
+            avisar(f"{len(registros)} prestador(es) cadastrado(s): " + ", ".join(resumo) + ".")
+            st.rerun()
+
+
 def base_completa():
     df = carregar()
     if df.empty:
         st.info("Nenhum candidato cadastrado ainda.")
+        importar_lote()
         return
     df["situacao"] = df.apply(rotulo_etapa, axis=1)
     df["cnpj_sit"] = df.apply(
         lambda r: "" if not r["form_enviado_em"] else ("Regular" if not cnpj_pendente(r) else "Pendente"), axis=1)
     st.dataframe(
-        df[["nome", "codigo_acesso", "vaga", "email", "telefone", "telefone_corporativo", "status_entrevista", "avaliacao_nota",
+        df[["nome", "codigo_acesso", "vaga", "email", "email_corporativo", "telefone", "telefone_corporativo", "status_entrevista", "avaliacao_nota",
             "situacao", "cnpj_sit", "padrinho", "atualizado_em"]]
-        .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail",
-                         "telefone": "Tel. pessoal", "telefone_corporativo": "Tel. corporativo", "status_entrevista": "Entrevista", "avaliacao_nota": "Nota",
+        .rename(columns={"nome": "Nome", "codigo_acesso": "Código de acesso", "vaga": "Vaga", "email": "E-mail pessoal",
+                         "email_corporativo": "E-mail corporativo", "telefone": "Tel. pessoal", "telefone_corporativo": "Tel. corporativo", "status_entrevista": "Entrevista", "avaliacao_nota": "Nota",
                          "situacao": "Situação", "cnpj_sit": "CNPJ", "padrinho": "Padrinho",
                          "atualizado_em": "Atualizado em"}),
         hide_index=True, width="stretch",
     )
     st.download_button("⬇️ Exportar base completa (CSV)", df[COLUNAS].to_csv(index=False).encode("utf-8-sig"),
                        "prestadores.csv", "text/csv")
+    importar_lote()
 
 
 def mostrar_arquivo(valor, rotulo, key):
@@ -2063,7 +2199,7 @@ def status_etapas(r):
     # Etapa 3: formulário do candidato com dados e CNPJ
     if feitas[3]:
         st3 = "ok"
-    elif form and r["possui_cnpj"] == SIM and r["cnpj_apto"] != SIM:
+    elif form and r["possui_cnpj"] == SIM and r["cnpj_apto"] != SIM and not cnpj_declarado(r):
         st3 = "erro"  # CNPJ fora das regras (MEI, CNAE ou situação)
     else:
         st3 = "andamento" if form else "todo"
@@ -2152,9 +2288,13 @@ def dialogo_editar(r):
     erros = st.session_state.get(f"ed_erros_{pid}", {})
     nome = st.text_input("Nome *", r["nome"], key=f"ed_nome_{pid}")
     mostrar_erro(st, erros.get("nome"))
-    email = st.text_input("E-mail *", r["email"], key=f"ed_email_{pid}",
-                          help="É com este e-mail e o código de acesso que o candidato entra no sistema.")
-    mostrar_erro(st, erros.get("email"))
+    c_em1, c_em2 = st.columns(2)
+    email = c_em1.text_input("E-mail pessoal *", r["email"], key=f"ed_email_{pid}",
+                             help="É com este e-mail e o código de acesso que o candidato entra no sistema.")
+    mostrar_erro(c_em1, erros.get("email"))
+    email_corp = c_em2.text_input("E-mail corporativo", r["email_corporativo"], key=f"ed_emailc_{pid}",
+                                  help="Usado no envio do resumo de comissionamento (Pagamentos).")
+    mostrar_erro(c_em2, erros.get("emailc"))
     c_tel1, c_tel2 = st.columns(2)
     tel = c_tel1.text_input("Telefone pessoal *", fmt_tel(r["telefone"]), key=f"ed_tel_{pid}",
                             placeholder="(31) 99999-9999")
@@ -2179,7 +2319,8 @@ def dialogo_editar(r):
     if c2.button("💾 Salvar", type="primary", width="stretch", key=f"ed_salvar_{pid}"):
         novos_erros = {c: m for c, m in {"nome": erro_nome(nome, completo=False), "email": erro_email(email),
                                           "tel": erro_tel(tel),
-                                          "telc": erro_tel_corporativo(tel_corp)}.items() if m}
+                                          "telc": erro_tel_corporativo(tel_corp),
+                                          "emailc": erro_email(email_corp) if email_corp.strip() else ""}.items() if m}
         if pessoais:
             end = pessoais["end"]
             novos_erros.update({c: m for c, m in {
@@ -2193,7 +2334,8 @@ def dialogo_editar(r):
         if novos_erros:
             st.rerun()
         campos = {"nome": titulo_nome(nome), "email": email.strip().lower(), "telefone": fmt_tel(tel),
-                  "telefone_corporativo": fmt_tel(tel_corp) if tel_corp.strip() else "", "vaga": vaga}
+                  "telefone_corporativo": fmt_tel(tel_corp) if tel_corp.strip() else "", "vaga": vaga,
+                  "email_corporativo": email_corp.strip().lower()}
         if pessoais:
             end = pessoais["end"]
             campos.update(nome_completo=titulo_nome(pessoais["nome_completo"]), cpf=so_digitos(pessoais["cpf"]),
@@ -2263,9 +2405,9 @@ def ficha_prestador(r):
     elif st.session_state.get("editar_aberto") == r["id"]:
         dialogo_editar(r)
     html(f'<div class="hero"><h2>{esc(r["nome"])}</h2>'
-         f'<p>{esc(r["vaga"])} · {esc(r["email"])} · 📱 Pessoal {esc(r["telefone"]) or "—"} · '
-         f'🏢 Corporativo {esc(r["telefone_corporativo"]) or "—"} · '
-         f'Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
+         f'<p>{esc(r["vaga"])} · Código de acesso <code>{esc(r["codigo_acesso"])}</code></p>'
+         f'<p>✉️ Pessoal {esc(r["email"])} · 📧 Corporativo {esc(r["email_corporativo"]) or "—"} · '
+         f'📱 Pessoal {esc(r["telefone"]) or "—"} · 🏢 Corporativo {esc(r["telefone_corporativo"]) or "—"}</p>'
          f'<p><b>{situacao_ficha(r)}</b></p></div>')
 
     rotulos = [ABA_RESUMO] + rotulos_abas(r) + [ABA_ANEXOS]
@@ -2508,7 +2650,10 @@ def onepage_html(r):
             f"</table></td></tr>"
             f'<tr><td style="padding:4px 14px 8px"><table width="100%" cellpadding="0" cellspacing="0">{linhas}'
             f"</table></td></tr></table>")
-    dados = [("Vaga", r["vaga"]), ("E-mail", r["email"]), ("Tel. pessoal", r["telefone"])]
+    dados = [("Vaga", r["vaga"]), ("E-mail", r["email"])]
+    if r["email_corporativo"]:
+        dados.append(("E-mail corporativo", r["email_corporativo"]))
+    dados.append(("Tel. pessoal", r["telefone"]))
     if r["telefone_corporativo"]:
         dados.append(("Tel. corporativo", r["telefone_corporativo"]))
     dados += [("Código de acesso", r["codigo_acesso"]),
@@ -2721,7 +2866,8 @@ def aba_documentos(r):
         html(campos_html({
             "Nome completo": r["nome_completo"], "CPF": fmt_cpf(r["cpf"]), "RG": r["rg"],
             "Nascimento": data_iso_br(r["data_nascimento"]), "Tel. pessoal": r["telefone"],
-            "Tel. corporativo": r["telefone_corporativo"], "E-mail": r["email"],
+            "Tel. corporativo": r["telefone_corporativo"], "E-mail pessoal": r["email"],
+            "E-mail corporativo": r["email_corporativo"],
             "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
         }))
         mostrar_arquivo(r["doc_identidade"], "CNH ou RG com CPF", key=f"dl_docid_{r['id']}")
@@ -3329,7 +3475,7 @@ def pagamentos():
         if r is not None:
             st.session_state[k("parceiro")] = r["razao_social"] or r["nome_completo"] or r["nome"]
             st.session_state[k("cnpj")] = fmt_cnpj(r["cnpj"])
-            st.session_state[k("email")] = r["email"]
+            st.session_state[k("email")] = r["email_corporativo"] or r["email"]
 
     with st.container(border=True):
         st.markdown("**Dados do parceiro**")
@@ -3348,6 +3494,7 @@ def pagamentos():
                              on_change=formatar(k("cnpj"), fmt_cnpj))
         mostrar_erro(c1, erros.get("cnpj"))
         email = c2.text_input("E-mail do Parceiro *", key=k("email"), placeholder="nome@email.com",
+                              help="Ao puxar um prestador cadastrado, vem o e-mail corporativo (ou o pessoal, se não houver).",
                               on_change=formatar(k("email"), lambda x: x.strip()))
         mostrar_erro(c2, erros.get("email"))
         c1, c2, c3 = st.columns(3)
