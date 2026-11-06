@@ -3073,12 +3073,366 @@ def comparativo():
         st.rerun()
 
 
+# =============================================================================
+# PAGAMENTOS (resumo de comissionamento enviado ao parceiro)
+# =============================================================================
+COPIA_PAGAMENTO_PADRAO = ["financeirolancefinanciamentos@gmail.com"]
+VALOR_POR_SEGURO = 20.0
+LARANJA, AZUL_ESCURO, VERDE = "#F58220", "#1E2A4A", "#2EAA5C"
+# (chave, rótulo) dos detalhes de cada modelo. "auto" = calculado; "desconto" = abatido do total.
+MODELOS_PAGAMENTO = {
+    "Modelo Novo": [
+        ("comissao_producao", "Comissão por Produção", ""),
+        ("ajuda_custo", "Ajuda de Custo", ""),
+        ("bonus_performance", "Bônus de Performance", ""),
+        ("complementos", "Complementos", ""),
+        ("premiacao", "Premiação", ""),
+        ("adiantamento", "Adiantamento", "desconto"),
+    ],
+    "Modelo Antigo": [
+        ("comissao_producao", "Comissão por Produção", "auto"),
+        ("comissao_seguros", f"Comissão Seguros (R$ {VALOR_POR_SEGURO:.0f} por Seguro)", "auto"),
+        ("plus_meta", "Plus Atingimento de Meta", ""),
+        ("ajuda_custo", "Ajuda de Custo", ""),
+        ("premiacao", "Premiação", ""),
+        ("adiantamento", "Adiantamento", "desconto"),
+    ],
+}
+
+
+def hora_brasilia():
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Sao_Paulo"))
+
+
+def fmt_brl(v):
+    s = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return ("- " if v < 0 else "") + f"R$ {s}"
+
+
+def ler_valor(txt):
+    """Aceita 1.087.875,00 / 1087875,00 / 1087875.00 / R$ 500. Retorna None se não for número."""
+    t = re.sub(r"[R$\s]", "", str(txt or ""))
+    if not t:
+        return 0.0
+    if "," in t:
+        t = t.replace(".", "").replace(",", ".")
+    elif t.count(".") > 1 or re.fullmatch(r"\d{1,3}(\.\d{3})+", t):
+        t = t.replace(".", "")
+    try:
+        return round(float(t), 2)
+    except ValueError:
+        return None
+
+
+def fmt_valor_campo(txt):
+    v = ler_valor(txt)
+    return txt if v is None or not str(txt).strip() else fmt_brl(v).replace("R$ ", "")
+
+
+def calcular_pagamento(d):
+    """Completa os campos calculados e o total. d tem os dados gerais e os detalhes do modelo."""
+    if d["modelo"] == "Modelo Antigo":
+        d["comissao_producao"] = round(d["producao"] * d["pct_comissao"] / 100, 2)
+        d["comissao_seguros"] = round(d["n_seguros"] * VALOR_POR_SEGURO, 2)
+    total = 0.0
+    for chave, _, tipo in MODELOS_PAGAMENTO[d["modelo"]]:
+        total += -d[chave] if tipo == "desconto" else d[chave]
+    d["total"] = round(total, 2)
+    return d
+
+
+def linhas_pagamento(d):
+    """(rótulo, valor) na ordem do resumo: dados gerais e detalhes da comissão."""
+    gerais = [
+        ("Período de Referência", f"{d['inicio'].strftime('%d/%m/%Y')} à {d['fim'].strftime('%d/%m/%Y')}"),
+        ("Parceiro", d["parceiro"]),
+        ("CNPJ do Parceiro", fmt_cnpj(d["cnpj"])),
+        ("E-mail do Parceiro", d["email"]),
+        ("Número de Contratos", str(d["n_contratos"])),
+        ("Número de Seguros", str(d["n_seguros"])),
+        ("Produção Comissionada", fmt_brl(d["producao"])),
+        ("Comissão Total (Valor a Receber)", fmt_brl(d["total"])),
+    ]
+    detalhes = []
+    if d["modelo"] == "Modelo Antigo":
+        detalhes.append(("% Comissão", f"{d['pct_comissao']:.2f}".rstrip("0").rstrip(".").replace(".", ",") + "%"))
+    for chave, rotulo, tipo in MODELOS_PAGAMENTO[d["modelo"]]:
+        detalhes.append((rotulo, fmt_brl(-d[chave] if tipo == "desconto" and d[chave] else d[chave])))
+    detalhes.append(("Data e Hora do Registro", d["registro"]))
+    return gerais, detalhes
+
+
+def resumo_pagamento_html(d):
+    """Cartão do resumo (corpo do e-mail e prévia na tela). Só tabelas e estilos inline, para o Gmail."""
+    gerais, detalhes = linhas_pagamento(d)
+    check = (f'<span style="display:inline-block;width:16px;height:16px;border-radius:8px;background:{VERDE};'
+             'color:#fff;font-size:11px;line-height:16px;text-align:center;font-weight:bold;">&#10003;</span>')
+
+    def linhas(itens):
+        return "".join(f'<tr><td style="width:24px;padding:5px 0;vertical-align:top;">{check}</td>'
+                       f'<td style="padding:5px 0;font-size:14px;color:#1F2937;">'
+                       f'<b style="color:{AZUL_ESCURO};">{esc(k)}:</b> {esc(v)}</td></tr>' for k, v in itens)
+
+    return (
+        '<div style="background:#F3F4F6;padding:18px 8px;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;padding:24px 22px;'
+        'box-shadow:0 1px 4px rgba(0,0,0,.08);">'
+        f'<div style="text-align:center;line-height:1;"><div style="font-size:30px;font-weight:800;color:{LARANJA};'
+        f'letter-spacing:1px;">EHS</div><div style="font-size:10px;font-weight:700;color:{AZUL_ESCURO};'
+        'letter-spacing:2px;margin-top:2px;">NEGÓCIOS</div></div>'
+        f'<h2 style="text-align:center;color:{LARANJA};font-size:24px;margin:18px 0 16px;">Resumo de Comissionamento</h2>'
+        '<div style="border:1px solid #E5E7EB;border-radius:12px;padding:14px 18px;">'
+        f'<table style="border-collapse:collapse;width:100%;">{linhas(gerais)}</table>'
+        f'<div style="font-weight:bold;color:{LARANJA};font-size:15px;margin:14px 0 4px;">Detalhes da Comissão</div>'
+        f'<table style="border-collapse:collapse;width:100%;">{linhas(detalhes)}</table>'
+        '<hr style="border:none;border-top:1px solid #D1D5DB;margin:16px 0;">'
+        f'<div style="text-align:center;font-size:21px;color:#1F2937;"><b>Total a Receber:</b> {fmt_brl(d["total"])}</div>'
+        '</div></div></div>'
+    )
+
+
+def _pdf_txt(s):
+    return str(s).replace("−", "-").encode("latin-1", "replace").decode("latin-1")
+
+
+def resumo_pagamento_pdf(d):
+    """Mesmo resumo do e-mail em PDF (fpdf2, fontes padrão)."""
+    from fpdf import FPDF
+
+    def cor(h):
+        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+    gerais, detalhes = linhas_pagamento(d)
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+    pdf.set_fill_color(243, 244, 246)
+    pdf.rect(0, 0, 210, 297, style="F")
+    x0, w = 25, 160
+    altura = 74 + 8.5 * (len(gerais) + len(detalhes)) + 22
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_draw_color(229, 231, 235)
+    pdf.rect(x0, 15, w, altura, style="DF", round_corners=True, corner_radius=6)
+    pdf.set_text_color(*cor(LARANJA))
+    pdf.set_font("Helvetica", "B", 26)
+    pdf.set_xy(x0, 22)
+    pdf.cell(w, 10, "EHS", align="C")
+    pdf.set_text_color(*cor(AZUL_ESCURO))
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_xy(x0, 32)
+    pdf.cell(w, 4, _pdf_txt("N E G Ó C I O S"), align="C")
+    pdf.set_text_color(*cor(LARANJA))
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_xy(x0, 42)
+    pdf.cell(w, 10, "Resumo de Comissionamento", align="C")
+    xi, wi = x0 + 8, w - 16
+    y = 58
+    pdf.set_draw_color(229, 231, 235)
+    pdf.rect(xi, y, wi, altura - (y - 15) - 8, style="D", round_corners=True, corner_radius=4)
+    y += 6
+
+    def linha(rotulo, valor, y):
+        pdf.set_fill_color(*cor(VERDE))
+        pdf.ellipse(xi + 6, y + 0.8, 4.2, 4.2, style="F")
+        pdf.set_draw_color(255, 255, 255)
+        pdf.set_line_width(0.6)
+        pdf.line(xi + 7.0, y + 3.0, xi + 7.9, y + 3.9)
+        pdf.line(xi + 7.9, y + 3.9, xi + 9.3, y + 2.0)
+        pdf.set_line_width(0.2)
+        pdf.set_xy(xi + 13, y)
+        pdf.set_text_color(*cor(AZUL_ESCURO))
+        pdf.set_font("Helvetica", "B", 10.5)
+        r = _pdf_txt(rotulo + ": ")
+        pdf.cell(pdf.get_string_width(r), 6, r)
+        pdf.set_text_color(31, 41, 55)
+        pdf.set_font("Helvetica", "", 10.5)
+        pdf.cell(wi - 20 - pdf.get_string_width(r), 6, _pdf_txt(valor))
+
+    for k, v in gerais:
+        linha(k, v, y)
+        y += 8.5
+    pdf.set_xy(xi + 6, y + 1)
+    pdf.set_text_color(*cor(LARANJA))
+    pdf.set_font("Helvetica", "B", 11.5)
+    pdf.cell(wi, 6, _pdf_txt("Detalhes da Comissão"))
+    y += 9
+    for k, v in detalhes:
+        linha(k, v, y)
+        y += 8.5
+    y += 3
+    pdf.set_draw_color(209, 213, 219)
+    pdf.line(xi + 6, y, xi + wi - 6, y)
+    y += 6
+    pdf.set_text_color(31, 41, 55)
+    rot, val = "Total a Receber: ", fmt_brl(d["total"])
+    pdf.set_font("Helvetica", "B", 16)
+    lr = pdf.get_string_width(rot)
+    pdf.set_font("Helvetica", "", 16)
+    lv = pdf.get_string_width(_pdf_txt(val))
+    pdf.set_xy(x0 + (w - lr - lv) / 2, y)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(lr, 8, rot)
+    pdf.set_font("Helvetica", "", 16)
+    pdf.cell(lv, 8, _pdf_txt(val))
+    return bytes(pdf.output())
+
+
+def nome_pdf_pagamento(d):
+    return f"Resumo de Comissionamento - {re.sub(r'[^A-Za-z0-9 ._-]', '', sem_acento(d['parceiro']))} - " \
+           f"{d['inicio'].strftime('%m-%Y')}.pdf"
+
+
+def sem_acento(t):
+    import unicodedata
+    return unicodedata.normalize("NFKD", str(t)).encode("ascii", "ignore").decode()
+
+
+def enviar_pagamento(d, pdf):
+    import smtplib
+    from email.message import EmailMessage
+
+    copia = list(cfg_email("copia_pagamentos", COPIA_PAGAMENTO_PADRAO))
+    gerais, detalhes = linhas_pagamento(d)
+    msg = EmailMessage()
+    msg["Subject"] = f"Resumo de Comissionamento · {d['parceiro']} · {gerais[0][1]}"
+    msg["From"] = f"EHS Negócios <{cfg_email('remetente')}>"
+    msg["To"] = d["email"]
+    if copia:
+        msg["Cc"] = ", ".join(copia)
+    msg.set_content("Resumo de Comissionamento\n\n" + "\n".join(f"{k}: {v}" for k, v in gerais)
+                    + "\n\nDetalhes da Comissão\n" + "\n".join(f"{k}: {v}" for k, v in detalhes)
+                    + f"\n\nTotal a Receber: {fmt_brl(d['total'])}\n\nO resumo também segue em PDF anexo.")
+    msg.add_alternative(resumo_pagamento_html(d), subtype="html")
+    msg.add_attachment(pdf, maintype="application", subtype="pdf", filename=nome_pdf_pagamento(d))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
+        smtp.login(cfg_email("remetente"), str(cfg_email("senha_app")).replace(" ", ""))
+        smtp.send_message(msg)
+
+
+def pagamentos():
+    v = st.session_state.setdefault("pag_versao", 0)  # muda a cada envio para limpar o formulário
+
+    def k(nome):
+        return f"pag_{nome}_{v}"
+
+    erros = st.session_state.get("pag_erros", {})
+    modelo = st.segmented_control("Template", list(MODELOS_PAGAMENTO), default="Modelo Novo", key="pag_modelo",
+                                  required=True)
+
+    # Preenche parceiro, CNPJ e e-mail a partir de um prestador já cadastrado (opcional).
+    df = carregar()
+    cadastrados = {f"{r['nome_completo'] or r['nome']} · {r['vaga']}": r for _, r in df.iterrows()}
+
+    def ao_escolher():
+        r = cadastrados.get(st.session_state.get(k("cad")))
+        if r is not None:
+            st.session_state[k("parceiro")] = r["razao_social"] or r["nome_completo"] or r["nome"]
+            st.session_state[k("cnpj")] = fmt_cnpj(r["cnpj"])
+            st.session_state[k("email")] = r["email"]
+
+    with st.container(border=True):
+        st.markdown("**Dados do parceiro**")
+        st.selectbox("Puxar dados de um prestador cadastrado (opcional)", list(cadastrados), index=None,
+                     placeholder="Digite para buscar", key=k("cad"), on_change=ao_escolher)
+        c1, c2 = st.columns(2)
+        inicio = c1.date_input("Período de Referência: início *", key=k("inicio"), format="DD/MM/YYYY",
+                               value=(date.today().replace(day=1) - pd.Timedelta(days=1)).replace(day=1))
+        fim = c2.date_input("Período de Referência: fim *", key=k("fim"), format="DD/MM/YYYY",
+                            value=date.today().replace(day=1) - pd.Timedelta(days=1))
+        mostrar_erro(c2, erros.get("periodo"))
+        parceiro = st.text_input("Parceiro *", key=k("parceiro"))
+        mostrar_erro(st, erros.get("parceiro"))
+        c1, c2 = st.columns(2)
+        cnpj = c1.text_input("CNPJ do Parceiro *", key=k("cnpj"), placeholder="00.000.000/0000-00",
+                             on_change=formatar(k("cnpj"), fmt_cnpj))
+        mostrar_erro(c1, erros.get("cnpj"))
+        email = c2.text_input("E-mail do Parceiro *", key=k("email"), placeholder="nome@email.com",
+                              on_change=formatar(k("email"), lambda x: x.strip()))
+        mostrar_erro(c2, erros.get("email"))
+        c1, c2, c3 = st.columns(3)
+        n_contratos = c1.number_input("Número de Contratos", min_value=0, step=1, key=k("contratos"))
+        n_seguros = c2.number_input("Número de Seguros", min_value=0, step=1, key=k("seguros"))
+        producao_txt = c3.text_input("Produção Comissionada (R$)", key=k("producao"), placeholder="0,00",
+                                     on_change=formatar(k("producao"), fmt_valor_campo))
+        mostrar_erro(c3, erros.get("producao"))
+
+    valores = {"producao": ler_valor(producao_txt)}
+    with st.container(border=True):
+        st.markdown(f"**Detalhes da Comissão** · {modelo}")
+        pct = 0.0
+        if modelo == "Modelo Antigo":
+            pct = st.number_input("% Comissão", min_value=0.0, max_value=100.0, step=0.05, format="%.2f",
+                                  key=k("pct"))
+        cols = st.columns(2)
+        i = 0
+        for chave, rotulo, tipo in MODELOS_PAGAMENTO[modelo]:
+            col = cols[i % 2]
+            i += 1
+            if tipo == "auto":
+                continue
+            txt = col.text_input(f"{rotulo} (R$)", key=k(chave), placeholder="0,00",
+                                 help="Valor descontado do total." if tipo == "desconto" else None,
+                                 on_change=formatar(k(chave), fmt_valor_campo))
+            mostrar_erro(col, erros.get(chave))
+            valores[chave] = ler_valor(txt)
+        if modelo == "Modelo Antigo":
+            st.caption(f"Comissão por Produção = Produção Comissionada × % Comissão. "
+                       f"Comissão Seguros = Número de Seguros × R$ {VALOR_POR_SEGURO:.0f}. "
+                       "Os dois são calculados sozinhos.")
+        st.caption("Comissão Total (Valor a Receber) = soma dos valores acima, menos o Adiantamento.")
+
+    invalidos = {c: "Valor inválido. Use o formato 1.234,56." for c, x in valores.items() if x is None}
+    d = {c: (x or 0.0) for c, x in valores.items()}
+    d.update(modelo=modelo, inicio=inicio, fim=fim, parceiro=parceiro.strip(), cnpj=so_digitos(cnpj),
+             email=email.strip(), n_contratos=int(n_contratos), n_seguros=int(n_seguros), pct_comissao=pct,
+             registro=hora_brasilia().strftime("%d/%m/%Y, %H:%M:%S"))
+    for chave, _, _ in MODELOS_PAGAMENTO[modelo]:
+        d.setdefault(chave, 0.0)
+    calcular_pagamento(d)
+
+    st.markdown("##### Prévia do e-mail e do PDF")
+    st.html(resumo_pagamento_html(d))
+    copia = ", ".join(cfg_email("copia_pagamentos", COPIA_PAGAMENTO_PADRAO))
+    st.caption(f"Vai para **{d['email'] or 'o e-mail do parceiro'}**, com cópia para {copia}, com o PDF anexo. "
+               "A data e hora do registro são as do envio.")
+    c1, c2 = st.columns(2)
+    c1.download_button("📄 Baixar PDF", data=lambda: resumo_pagamento_pdf(d), file_name=nome_pdf_pagamento(d),
+                       mime="application/pdf", on_click="ignore", width="stretch")
+    if c2.button("📧 Enviar", type="primary", width="stretch", key="pag_enviar"):
+        novos = dict(invalidos)
+        if not d["parceiro"]:
+            novos["parceiro"] = "Campo obrigatório."
+        if len(d["cnpj"]) != 14:
+            novos["cnpj"] = "Digite o CNPJ com 14 dígitos."
+        if erro_email(d["email"]):
+            novos["email"] = erro_email(d["email"])
+        if fim < inicio:
+            novos["periodo"] = "O fim do período é antes do início."
+        st.session_state["pag_erros"] = novos
+        if novos:
+            st.rerun()
+        if not usa_email():
+            st.error("O envio de e-mail não está configurado (Secrets [email]). Baixe o PDF e envie à mão.")
+            return
+        try:
+            enviar_pagamento(d, resumo_pagamento_pdf(d))
+        except Exception as e:
+            st.error(f"Não foi possível enviar o e-mail: {e}")
+            return
+        st.session_state["pag_versao"] += 1
+        st.session_state.pop("pag_erros", None)
+        avisar(f"Resumo de comissionamento enviado para {d['email']} (cópia: {copia}).", "📧")
+        st.rerun()
+
+
 # Páginas do painel RH: (chave, título no menu, descrição, função)
 MENU_RH = [
     ("quadro", "🗂️ Quadro", "Acompanhe cada prestador da entrevista ao início das operações.", quadro_kanban),
     ("novo", "➕ Novo candidato", "Cadastre o candidato e gere o código de acesso.", novo_candidato),
     ("comparativo", "📈 Comparativo", "Ranking e avaliações por vaga.", comparativo),
     ("base", "📋 Base completa", "Todos os registros, com exportação em CSV.", base_completa),
+    ("pagamentos", "💰 Pagamentos", "Preencha o resumo de comissionamento e envie ao parceiro com o PDF.", pagamentos),
 ]
 
 

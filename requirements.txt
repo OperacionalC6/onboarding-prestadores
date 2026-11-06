@@ -5,3 +5,4 @@ gspread>=6.0
 google-auth>=2.20
 openpyxl>=3.1
 pypdf>=4.0
+fpdf2>=2.7
