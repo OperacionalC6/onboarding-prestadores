@@ -2146,7 +2146,7 @@ def _fechar_edicao():
     st.session_state.pop("editar_aberto", None)
 
 
-@st.dialog("Editar cadastro", on_dismiss=_fechar_edicao)
+@st.dialog("Editar cadastro", width="large", on_dismiss=_fechar_edicao)
 def dialogo_editar(r):
     pid = r["id"]
     erros = st.session_state.get(f"ed_erros_{pid}", {})
@@ -2167,6 +2167,11 @@ def dialogo_editar(r):
                         index=opcoes_vaga.index(r["vaga"]) if r["vaga"] in opcoes_vaga else 0, key=f"ed_vaga_{pid}")
     if email.strip().lower() != r["email"]:
         st.caption("⚠️ Ao trocar o e-mail, avise o candidato: ele passa a entrar com o e-mail novo.")
+    pessoais = {}
+    if r["form_enviado_em"]:
+        pessoais = campos_pessoais_edicao(r, erros)
+    else:
+        st.caption("Os dados pessoais (CPF, RG, endereço...) aparecem aqui depois que o candidato enviar o formulário.")
     c1, c2 = st.columns(2)
     if c1.button("Cancelar", width="stretch", key=f"ed_cancelar_{pid}"):
         _fechar_edicao()
@@ -2175,17 +2180,70 @@ def dialogo_editar(r):
         novos_erros = {c: m for c, m in {"nome": erro_nome(nome, completo=False), "email": erro_email(email),
                                           "tel": erro_tel(tel),
                                           "telc": erro_tel_corporativo(tel_corp)}.items() if m}
+        if pessoais:
+            end = pessoais["end"]
+            novos_erros.update({c: m for c, m in {
+                "p_nome": erro_nome(pessoais["nome_completo"]), "p_cpf": erro_cpf(pessoais["cpf"]),
+                "p_rg": erro_rg(pessoais["rg"]), "p_nasc": erro_nascimento(pessoais["nasc"]),
+                "cep": erro_cep(end["cep"]), "uf": "" if end["uf"] else "Selecione o estado.",
+                "cidade": erro_texto(end["cidade"]), "bairro": erro_texto(end["bairro"]),
+                "logradouro": erro_texto(end["logradouro"], 3), "numero": erro_numero(end["numero"]),
+            }.items() if m})
         st.session_state[f"ed_erros_{pid}"] = novos_erros
         if novos_erros:
             st.rerun()
         campos = {"nome": titulo_nome(nome), "email": email.strip().lower(), "telefone": fmt_tel(tel),
                   "telefone_corporativo": fmt_tel(tel_corp) if tel_corp.strip() else "", "vaga": vaga}
+        if pessoais:
+            end = pessoais["end"]
+            campos.update(nome_completo=titulo_nome(pessoais["nome_completo"]), cpf=so_digitos(pessoais["cpf"]),
+                          rg=pessoais["rg"].strip().upper(), data_nascimento=pessoais["nasc"].isoformat(),
+                          estado_civil=pessoais["estado_civil"], endereco=montar_endereco(end), **end)
         mudou = {c: v for c, v in campos.items() if v != r[c]}
         if mudou:
             atualizar(pid, **mudou)
         _fechar_edicao()
         avisar("Cadastro atualizado." if mudou else "Nada foi alterado.")
         st.rerun()
+
+
+def data_iso_br(v):
+    try:
+        return date.fromisoformat(v).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return v
+
+
+def campos_pessoais_edicao(r, erros):
+    """Dados pessoais que o candidato enviou na Etapa 3, para o RH corrigir no Editar cadastro."""
+    pid = r["id"]
+
+    def k(nome):
+        return f"edp_{nome}_{pid}"
+
+    st.markdown("##### Dados pessoais")
+    for c, v in {"nome": r["nome_completo"], "cpf": fmt_cpf(r["cpf"]), "rg": r["rg"]}.items():
+        st.session_state.setdefault(k(c), v)
+    c1, c2 = st.columns(2)
+    nome_completo = c1.text_input("Nome completo *", key=k("nome"))
+    mostrar_erro(c1, erros.get("p_nome"))
+    cpf = c2.text_input("CPF *", key=k("cpf"), placeholder="000.000.000-00", on_change=formatar(k("cpf"), fmt_cpf))
+    mostrar_erro(c2, erros.get("p_cpf"))
+    c1, c2, c3 = st.columns(3)
+    rg = c1.text_input("RG *", key=k("rg"))
+    mostrar_erro(c1, erros.get("p_rg"))
+    try:
+        dn = date.fromisoformat(r["data_nascimento"]) if r["data_nascimento"] else date(1990, 1, 1)
+    except ValueError:
+        dn = date(1990, 1, 1)
+    nasc = c2.date_input("Data de nascimento *", dn, min_value=date(1940, 1, 1), max_value=date.today(),
+                         format="DD/MM/YYYY", key=k("nasc"))
+    mostrar_erro(c2, erros.get("p_nasc"))
+    ec_idx = ESTADOS_CIVIS.index(r["estado_civil"]) if r["estado_civil"] in ESTADOS_CIVIS else 0
+    estado_civil = c3.selectbox("Estado civil *", ESTADOS_CIVIS, index=ec_idx, key=k("ec"))
+    end = campos_endereco(r, k, erros)
+    return {"nome_completo": nome_completo, "cpf": cpf, "rg": rg, "nasc": nasc, "estado_civil": estado_civil,
+            "end": end}
 
 
 def ficha_prestador(r):
@@ -2196,6 +2254,8 @@ def ficha_prestador(r):
     if c2.button("✏️ Editar cadastro", key=f"editar_{r['id']}", width="stretch"):
         st.session_state["editar_aberto"] = r["id"]
         st.session_state.pop(f"ed_erros_{r['id']}", None)
+        for chave in [c for c in st.session_state if str(c).startswith("edp_")]:  # abre com o que está gravado
+            del st.session_state[chave]
     if c3.button("🗑️ Excluir candidato", type="tertiary", key=f"excluir_{r['id']}", width="stretch"):
         st.session_state["excluir_aberto"] = r["id"]
     if st.session_state.get("excluir_aberto") == r["id"]:  # mantém a confirmação aberta entre reruns
@@ -2659,8 +2719,8 @@ def aba_documentos(r):
     with c1, st.container(border=True):
         st.markdown("**Dados pessoais**")
         html(campos_html({
-            "Nome completo": r["nome_completo"], "CPF": r["cpf"], "RG": r["rg"],
-            "Nascimento": r["data_nascimento"], "Tel. pessoal": r["telefone"],
+            "Nome completo": r["nome_completo"], "CPF": fmt_cpf(r["cpf"]), "RG": r["rg"],
+            "Nascimento": data_iso_br(r["data_nascimento"]), "Tel. pessoal": r["telefone"],
             "Tel. corporativo": r["telefone_corporativo"], "E-mail": r["email"],
             "Estado civil": r["estado_civil"], "Endereço": r["endereco"],
         }))
