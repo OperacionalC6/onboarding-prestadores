@@ -44,9 +44,9 @@ CNAE_EXIGIDO = "7319002"  # 7319-0/02 Promoção de vendas
 VAGAS = ["Operador EGV", "Corretor EGV", "Líder de EGV", "Gerente de Negócios", "Gerente Comercial"]
 VAGAS_RENOMEADAS = {"Gestor Comercial": "Gerente Comercial"}  # nome antigo -> atual, para registros já gravados
 VAGAS_ACEITAM_MEI = {"Operador EGV", "Corretor EGV", "Líder de EGV"}  # nas demais vagas o CNPJ não pode ser MEI
-STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Reprovado", "Candidato Desistiu"]
+STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Sem Resposta", "Reprovado", "Candidato Desistiu"]
 STATUS_ENCERRADOS = ("Reprovado", "Candidato Desistiu")  # processo encerrado; ficam ocultos no quadro por padrão
-STATUS_TRIAGEM = ("Em Triagem",) + STATUS_ENCERRADOS  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
+STATUS_TRIAGEM = ("Em Triagem", "Sem Resposta") + STATUS_ENCERRADOS  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
@@ -1342,6 +1342,7 @@ def tela_candidato():
             "Em Triagem": "Recebemos seu currículo e ele está em análise. Aguarde o contato do RH.",
             "Em Entrevista": "Seu processo ainda está na fase de entrevistas. Aguarde o contato do RH.",
             "Banco de Espera": "Você está no nosso banco de espera. Entraremos em contato assim que houver oportunidade.",
+            "Sem Resposta": "Tentamos falar com você e não tivemos retorno. Fale com o RH para seguir com o processo.",
             "Reprovado": "Agradecemos sua participação. Neste momento não seguiremos com o seu processo.",
             "Candidato Desistiu": "Seu processo foi encerrado. Se quiser retomar, fale com o RH.",
         }
@@ -1703,7 +1704,7 @@ def menu_rh():
 def kpis(df):
     ativos = int((df["status_final"] == STATUS_ATIVO).sum()) if not df.empty else 0
     em_ent = int(df["status_entrevista"].isin(["Em Entrevista", "Banco de Espera"]).sum()) if not df.empty else 0
-    em_tri = int((df["status_entrevista"] == "Em Triagem").sum()) if not df.empty else 0
+    em_tri = int(df["status_entrevista"].isin(["Em Triagem", "Sem Resposta"]).sum()) if not df.empty else 0
     onb = int(df.apply(lambda r: fase(r) == 2, axis=1).sum()) if not df.empty else 0
     pend_cnpj = int(df.apply(lambda r: fase(r) == 2 and bool(r["form_enviado_em"]) and cnpj_pendente(r),
                                   axis=1).sum()) if not df.empty else 0
@@ -1717,7 +1718,7 @@ def card_prestador(r):
     feitas = etapas_concluidas(r)
     chips = [chip(r["vaga"], "info")]
     if r["status_entrevista"] != "Aprovado":
-        tipo = {"Reprovado": "bad", "Candidato Desistiu": "bad", "Banco de Espera": "warn"}.get(r["status_entrevista"], "pend")
+        tipo = {"Reprovado": "bad", "Candidato Desistiu": "bad", "Banco de Espera": "warn", "Sem Resposta": "warn"}.get(r["status_entrevista"], "pend")
         chips.append(chip(r["status_entrevista"], tipo))
     if r["avaliacao_nota"]:
         chips.append(chip(f"Nota {r['avaliacao_nota']}", "info"))
