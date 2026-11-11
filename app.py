@@ -45,8 +45,8 @@ VAGAS = ["Operador EGV", "Corretor EGV", "Líder de EGV", "Gerente de Negócios"
 VAGAS_RENOMEADAS = {"Gestor Comercial": "Gerente Comercial"}  # nome antigo -> atual, para registros já gravados
 VAGAS_ACEITAM_MEI = {"Operador EGV", "Corretor EGV", "Líder de EGV"}  # nas demais vagas o CNPJ não pode ser MEI
 STATUS_ENTREVISTA = ["Em Triagem", "Em Entrevista", "Aprovado", "Banco de Espera", "Sem Resposta", "Reprovado", "Candidato Desistiu"]
-STATUS_ENCERRADOS = ("Reprovado", "Candidato Desistiu")  # processo encerrado; ficam ocultos no quadro por padrão
-STATUS_TRIAGEM = ("Em Triagem", "Sem Resposta") + STATUS_ENCERRADOS  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
+STATUS_ENCERRADOS = ("Reprovado", "Candidato Desistiu", "Sem Resposta")  # processo encerrado; ficam ocultos no quadro por padrão
+STATUS_TRIAGEM = ("Em Triagem",) + STATUS_ENCERRADOS  # ficam na coluna Triagem; Banco de Espera fica em Entrevista
 UFS = ["", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR",
        "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 ESTADOS_CIVIS = ["Solteiro(a)", "Casado(a)", "União estável", "Divorciado(a)", "Viúvo(a)"]
@@ -1704,7 +1704,7 @@ def menu_rh():
 def kpis(df):
     ativos = int((df["status_final"] == STATUS_ATIVO).sum()) if not df.empty else 0
     em_ent = int(df["status_entrevista"].isin(["Em Entrevista", "Banco de Espera"]).sum()) if not df.empty else 0
-    em_tri = int(df["status_entrevista"].isin(["Em Triagem", "Sem Resposta"]).sum()) if not df.empty else 0
+    em_tri = int((df["status_entrevista"] == "Em Triagem").sum()) if not df.empty else 0
     onb = int(df.apply(lambda r: fase(r) == 2, axis=1).sum()) if not df.empty else 0
     pend_cnpj = int(df.apply(lambda r: fase(r) == 2 and bool(r["form_enviado_em"]) and cnpj_pendente(r),
                                   axis=1).sum()) if not df.empty else 0
@@ -1718,7 +1718,7 @@ def card_prestador(r):
     feitas = etapas_concluidas(r)
     chips = [chip(r["vaga"], "info")]
     if r["status_entrevista"] != "Aprovado":
-        tipo = {"Reprovado": "bad", "Candidato Desistiu": "bad", "Banco de Espera": "warn", "Sem Resposta": "warn"}.get(r["status_entrevista"], "pend")
+        tipo = {"Reprovado": "bad", "Candidato Desistiu": "bad", "Banco de Espera": "warn", "Sem Resposta": "bad"}.get(r["status_entrevista"], "pend")
         chips.append(chip(r["status_entrevista"], tipo))
     if r["avaliacao_nota"]:
         chips.append(chip(f"Nota {r['avaliacao_nota']}", "info"))
@@ -1753,7 +1753,7 @@ def quadro_kanban():
     vagas = ["Todas as vagas"] + sorted(v for v in df["vaga"].unique() if v)
     vaga = f2.selectbox("Vaga", vagas, key="kb_vaga")
     f3.write("")
-    mostrar_fora = f3.toggle("Mostrar reprovados e desistentes", key="kb_fora")
+    mostrar_fora = f3.toggle("Mostrar reprovados, desistentes e sem resposta", key="kb_fora")
 
     if busca:
         b = busca.strip().lower()
@@ -2189,7 +2189,7 @@ def status_etapas(r):
     """Status visual de cada etapa da ficha: ok | andamento | erro | todo."""
     feitas = etapas_concluidas(r)
     form = bool(r["form_enviado_em"])
-    st1 = {"Aprovado": "ok", "Reprovado": "erro", "Candidato Desistiu": "erro"}.get(r["status_entrevista"], "andamento")
+    st1 = {"Aprovado": "ok", "Reprovado": "erro", "Candidato Desistiu": "erro", "Sem Resposta": "erro"}.get(r["status_entrevista"], "andamento")
     # Etapa 2: validação de documentos pelo RH (com o check do TJ)
     if r["doc_status"] == DOC_APROVADA:
         st2 = "ok"
@@ -2661,6 +2661,7 @@ def onepage_html(r):
               ("Situação", motivo if reprovado else r["status_final"] or "Em onboarding")]
     if reprovado:
         texto_fim = ("candidato(a) desistiu do processo" if motivo == "Candidato Desistiu"
+                     else "candidato(a) sem resposta ao contato do RH" if motivo == "Sem Resposta"
                      else "candidato(a) reprovado(a) na triagem/entrevista")
         progresso = (f'<div style="font-size:14px;color:#991B1B"><b>Processo encerrado: {texto_fim}.</b></div>')
     else:
